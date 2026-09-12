@@ -4,21 +4,50 @@ import shutil
 import tempfile
 from pathlib import Path
 
-import aiosqlite
 from aiogram import Bot, Dispatcher, F, Router
+
 from aiogram.types import FSInputFile, Message
 
 from AUdio import handle_media_message
-from bUTToN import get_mode, scope_for_message, setup_button_handlers
-from CAsh import get_file_record, init_cache_db, save_file_record
+from bUTToN import (
+    get_mode,
+    init_settings_db,
+    scope_for_message,
+    setup_button_handlers,
+)
+from CAsh import (
+    get_file_record,
+    init_cache_db,
+    save_file_record,
+)
 from NoTice import setup_notice_handlers
 from Reply import MESSAGES
-from SeTTiNGs import build_filename, is_ignored_url, normalize_url, sha256_id
-from yTFMe import convert_to_ogg_opus, download_with_ytdlp
+from SeTTiNGs import (
+    build_filename,
+    is_ignored_url,
+    normalize_url,
+    sha256_id,
+)
+from yTFMe import (
+    convert_to_ogg_opus,
+    download_with_ytdlp,
+)
 
-BOT_TOKEN = os.getenv("BOT_TOKEN", "")
-DB_PATH = os.getenv("DB_PATH", "bot.sqlite3")
-BOT_TAKEOFF = os.getenv("boT_TAkeoFF", "")
+
+BOT_TOKEN = os.getenv(
+    "BOT_TOKEN",
+    "",
+)
+
+DB_PATH = os.getenv(
+    "DB_PATH",
+    "bot.sqlite3",
+)
+
+BOT_TAKEOFF = os.getenv(
+    "boT_TAkeoFF",
+    "",
+)
 
 ACTIVE_DOWNLOADS = 3
 WAITING_DOWNLOADS = 3
@@ -26,40 +55,41 @@ WAITING_DOWNLOADS = 3
 reply_state = {}
 reply_state_lock = asyncio.Lock()
 
-router = Router(name=__name__)
-download_queue = asyncio.Queue(maxsize=WAITING_DOWNLOADS)
+download_queue = asyncio.Queue(
+    maxsize=WAITING_DOWNLOADS,
+)
+
+router = Router(
+    name="media_router",
+)
 
 
 async def init_db():
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
-            """
-            CREATE TABLE IF NOT EXISTS settings (
-                scope_key TEXT PRIMARY KEY,
-                mode TEXT NOT NULL DEFAULT 'default',
-                notice_state TEXT NOT NULL DEFAULT 'disabled'
-            )
-            """
-        )
-        await db.commit()
+    await init_settings_db(
+        DB_PATH,
+    )
 
-    await init_cache_db(DB_PATH)
+    await init_cache_db(
+        DB_PATH,
+    )
 
 
-async def send_takeoff_message(bot: Bot):
+async def send_takeoff_message(
+    bot: Bot,
+):
     if not BOT_TAKEOFF:
         return
 
     chat_ids = [
-        cid.strip()
-        for cid in BOT_TAKEOFF.split("/")
-        if cid.strip()
+        x.strip()
+        for x in BOT_TAKEOFF.split("/")
+        if x.strip()
     ]
 
-    for cid in chat_ids:
+    for chat_id in chat_ids:
         try:
             await bot.send_message(
-                chat_id=cid,
+                chat_id=chat_id,
                 text=MESSAGES["takeoff"],
             )
         except Exception:
@@ -87,7 +117,10 @@ async def process_url(
     mode: str,
 ):
     source_type = "url"
-    content_id = sha256_id(url)
+
+    content_id = sha256_id(
+        url,
+    )
 
     existing = await get_file_record(
         DB_PATH,
@@ -121,7 +154,10 @@ async def process_url(
         )
 
         if mode == "voice":
-            output = Path(workdir) / "voice.ogg"
+            output = (
+                Path(workdir)
+                / "voice.ogg"
+            )
 
             await convert_to_ogg_opus(
                 path,
@@ -197,28 +233,60 @@ async def submit_job(
         return
 
 
-async def rotating_reply(message: Message):
+async def rotating_reply(
+    message: Message,
+):
     if not message.from_user:
         return
 
-    key = f"{message.chat.id}:{message.from_user.id}"
+    key = (
+        f"{message.chat.id}:"
+        f"{message.from_user.id}"
+    )
 
     async with reply_state_lock:
-        index = reply_state.get(key, 0)
+        index = reply_state.get(
+            key,
+            0,
+        )
 
         reply_state[key] = (
             index + 1
-        ) % len(MESSAGES["bot_replies"])
+        ) % len(
+            MESSAGES["bot_replies"]
+        )
 
     await message.reply(
         MESSAGES["bot_replies"][index],
     )
 
 
+async def worker():
+    while True:
+        message, value, mode = (
+            await download_queue.get()
+        )
+
+        try:
+            await process_url(
+                message,
+                value,
+                mode,
+            )
+        finally:
+            download_queue.task_done()
+
+
 @router.message(
-    F.video | F.audio | F.voice | F.document
+    F.video
+    | F.audio
+    | F.voice
+    | F.document
+    | F.animation
 )
-async def media_handler(message: Message):
+async def media_handler(
+    message: Message,
+):
     await handle_media_message(
         message,
         DB_PATH,
@@ -226,13 +294,19 @@ async def media_handler(message: Message):
 
 
 @router.message(F.text)
-async def text_handler(message: Message):
-    text = (message.text or "").strip()
+async def text_handler(
+    message: Message,
+):
+    text = (
+        message.text or ""
+    ).strip()
 
     if not text:
         return
 
-    url = normalize_url(text)
+    url = normalize_url(
+        text,
+    )
 
     if url and not is_ignored_url(url):
         mode = await get_mode(
@@ -245,58 +319,111 @@ async def text_handler(message: Message):
             url,
             mode,
         )
+
         return
 
-    if message.chat.type == "private" or text == "بوت":
-        await rotating_reply(message)
+    if (
+        message.chat.type == "private"
+        or text == "بوت"
+    ):
+        await rotating_reply(
+            message,
+        )
 
 
-async def worker():
-    while True:
-        message, value, mode = await download_queue.get()
+@router.channel_post(
+    F.video
+    | F.audio
+    | F.document
+    | F.animation
+)
+async def channel_media_handler(
+    message: Message,
+):
+    await handle_media_message(
+        message,
+        DB_PATH,
+    )
 
-        try:
-            await process_url(
-                message,
-                value,
-                mode,
-            )
-        finally:
-            download_queue.task_done()
+
+@router.channel_post(F.text)
+async def channel_text_handler(
+    message: Message,
+):
+    text = (
+        message.text or ""
+    ).strip()
+
+    if not text:
+        return
+
+    url = normalize_url(
+        text,
+    )
+
+    if not url or is_ignored_url(url):
+        return
+
+    mode = await get_mode(
+        DB_PATH,
+        scope_for_message(message),
+    )
+
+    await submit_job(
+        message,
+        url,
+        mode,
+    )
 
 
 async def main():
     if not BOT_TOKEN:
         raise RuntimeError(
-            "BOT_TOKEN is not set",
+            "BOT_TOKEN is not set"
         )
 
     await init_db()
 
-    bot = Bot(BOT_TOKEN)
-    dp = Dispatcher()
-
-    button_router = setup_button_handlers(
-        DB_PATH,
+    bot = Bot(
+        BOT_TOKEN,
     )
 
-    notice_router = setup_notice_handlers(
-        DB_PATH,
+    dispatcher = Dispatcher()
+
+    dispatcher.include_router(
+        setup_button_handlers(
+            DB_PATH,
+        )
     )
 
-    dp.include_router(button_router)
-    dp.include_router(notice_router)
-    dp.include_router(router)
+    dispatcher.include_router(
+        setup_notice_handlers(
+            DB_PATH,
+        )
+    )
+
+    dispatcher.include_router(
+        router,
+    )
 
     workers = [
-        asyncio.create_task(worker())
-        for _ in range(ACTIVE_DOWNLOADS)
+        asyncio.create_task(
+            worker()
+        )
+        for _ in range(
+            ACTIVE_DOWNLOADS
+        )
     ]
 
-    await send_takeoff_message(bot)
+    await send_takeoff_message(
+        bot,
+    )
 
     try:
-        await dp.start_polling(bot)
+        await dispatcher.start_polling(
+            bot,
+        )
+
     finally:
         for task in workers:
             task.cancel()

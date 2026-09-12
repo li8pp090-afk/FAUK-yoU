@@ -1,9 +1,10 @@
 import hashlib
 import re
-from pathlib import Path
 from urllib.parse import urlparse
 
+
 UPPER_EXCEPTIONS = set("ATFGUJNML")
+
 
 IGNORED_HOSTS = {
     "t.me",
@@ -47,35 +48,32 @@ def clean_component(value: str) -> str:
 
     chars = []
 
-    for ch in value:
-        if ch.isascii() and ch.isalpha():
-            if ch.upper() in UPPER_EXCEPTIONS:
-                chars.append(ch.upper())
-            else:
-                chars.append(ch.lower())
+    for char in value:
+        if char.isascii() and char.isalpha():
+            chars.append(
+                char.upper()
+                if char.upper() in UPPER_EXCEPTIONS
+                else char.lower()
+            )
         else:
-            chars.append(ch)
+            chars.append(char)
 
     return "".join(chars)
 
 
 def build_filename(
     info: dict,
-    actual_path: Path,
-) -> str:
-    publisher_raw = (
+    actual_path,
+):
+    publisher = clean_component(
         info.get("channel")
         or info.get("uploader")
         or info.get("creator")
         or ""
     )
 
-    publisher = clean_component(
-        publisher_raw,
-    )
-
     title = clean_component(
-        info.get("title") or "",
+        info.get("title") or ""
     )
 
     if publisher and title:
@@ -103,13 +101,12 @@ def is_ignored_url(url: str) -> bool:
             or host.endswith(".telegram.org")
             or host.endswith(".youtube.com")
         )
+
     except Exception:
         return False
 
 
-def normalize_url(
-    text: str,
-) -> str | None:
+def normalize_url(text: str):
     match = re.search(
         r"https?://\S+",
         text or "",
@@ -125,5 +122,5 @@ def normalize_url(
 
 def sha256_id(value: str) -> str:
     return hashlib.sha256(
-        value.encode("utf-8"),
+        value.encode("utf-8")
     ).hexdigest()

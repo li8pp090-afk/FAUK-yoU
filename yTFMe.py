@@ -18,10 +18,11 @@ def ytdlp_options(
         },
     }
 
-    if mode == "voice":
-        options["format"] = "bestaudio/best"
-    else:
-        options["format"] = "bestvideo+bestaudio/best"
+    options["format"] = (
+        "bestaudio/best"
+        if mode == "voice"
+        else "bestvideo+bestaudio/best"
+    )
 
     return options
 
@@ -43,7 +44,7 @@ def download_with_ytdlp(
         )
 
         prepared = Path(
-            ydl.prepare_filename(info),
+            ydl.prepare_filename(info)
         )
 
         if prepared.exists():
@@ -57,7 +58,7 @@ def download_with_ytdlp(
 
         if not files:
             raise RuntimeError(
-                "download failed",
+                "download failed"
             )
 
         return max(
@@ -89,5 +90,5 @@ async def convert_to_ogg_opus(
 
     if code != 0 or not target.exists():
         raise RuntimeError(
-            "opus conversion failed",
+            "opus conversion failed"
         )
