@@ -58,7 +58,7 @@ async def send_saved_file(
     if mode == "voice":
         await message.reply_voice(voice=file_id)
     else:
-        await message.reply_document(document=file_id, caption=MESSAGES["default_completion"])
+        await message.reply_document(document=file_id)
 
 async def process_url(
     bot: Bot,
@@ -109,7 +109,6 @@ async def process_url(
                     path,
                     filename=filename,
                 ),
-                caption=MESSAGES["default_completion"],
             )
 
             await save_file_record(

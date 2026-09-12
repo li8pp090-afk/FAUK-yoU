@@ -36,7 +36,6 @@ async def process_telegram_media(
         else:
             await message.reply_document(
                 document=existing[0],
-                caption=MESSAGES["default_completion"],
             )
         return
 
@@ -68,7 +67,6 @@ async def process_telegram_media(
             filename = getattr(media, "file_name", None) or build_filename({}, input_path)
             sent = await message.reply_document(
                 document=FSInputFile(input_path, filename=filename),
-                caption=MESSAGES["default_completion"],
             )
 
             await save_file_record(
