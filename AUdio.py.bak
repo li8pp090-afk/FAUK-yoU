@@ -27,7 +27,7 @@ async def process_telegram_media(
     ):
         return
 
-    content_id = media.file_id
+    content_id = media.file_unique_id
 
     existing = await get_file_record(db_path, mode, "telegram_media", content_id)
     if existing:

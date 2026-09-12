@@ -30,18 +30,23 @@ def settings_markup(mode: str) -> InlineKeyboardMarkup:
 def scope_for_message(message: Message) -> str:
     if message.chat.type == "private":
         return f"user:{message.from_user.id}"
-    if message.message_thread_id:
-        return f"chat:{message.chat.id}:topic:{message.message_thread_id}"
+    
+    thread_id = getattr(message, "message_thread_id", None)
+    if thread_id:
+        return f"chat:{message.chat.id}:topic:{thread_id}"
     return f"chat:{message.chat.id}"
 
 def scope_for_callback(callback: CallbackQuery) -> str:
-    if callback.message and callback.message.chat.type == "private":
+    if not callback.message:
         return f"user:{callback.from_user.id}"
-    if callback.message and callback.message.message_thread_id:
-        return f"chat:{callback.message.chat.id}:topic:{callback.message.message_thread_id}"
-    if callback.message:
-        return f"chat:{callback.message.chat.id}"
-    return f"user:{callback.from_user.id}"
+    
+    if callback.message.chat.type == "private":
+        return f"user:{callback.from_user.id}"
+    
+    thread_id = getattr(callback.message, "message_thread_id", None)
+    if thread_id:
+        return f"chat:{callback.message.chat.id}:topic:{thread_id}"
+    return f"chat:{callback.message.chat.id}"
 
 async def get_mode(db_path: str, scope: str) -> str:
     async with aiosqlite.connect(db_path) as db:
