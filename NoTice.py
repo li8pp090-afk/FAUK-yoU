@@ -1,6 +1,7 @@
 from aiogram import F, Router
 from aiogram.enums import ChatType
 from aiogram.types import Message
+
 from bUTToN import get_notice_state, scope_for_message
 
 ALLOWED_CHAT_TYPES = {
@@ -66,29 +67,38 @@ SERVICE_FIELDS = (
     "user_shared",
 )
 
-notice_router = Router()
+notice_router = Router(name=__name__)
 _handlers_registered = False
+
 
 def setup_notice_handlers(db_path: str):
     global _handlers_registered
-    if not _handlers_registered:
-        _handlers_registered = True
 
-        @notice_router.message(
-            F.chat.type.in_(ALLOWED_CHAT_TYPES),
-            lambda msg: any(
-                getattr(msg, field, None) is not None
-                for field in SERVICE_FIELDS
-            )
+    if _handlers_registered:
+        return notice_router
+
+    _handlers_registered = True
+
+    @notice_router.message(
+        F.chat.type.in_(ALLOWED_CHAT_TYPES),
+        lambda message: any(
+            getattr(message, field, None) is not None
+            for field in SERVICE_FIELDS
+        ),
+    )
+    async def delete_service_messages(message: Message):
+        scope = scope_for_message(message)
+        state = await get_notice_state(
+            db_path,
+            scope,
         )
-        async def delete_service_messages(message: Message):
-            scope = scope_for_message(message)
-            state = await get_notice_state(db_path, scope)
-            if state != "enabled":
-                return
-            try:
-                await message.delete()
-            except Exception:
-                pass
+
+        if state != "enabled":
+            return
+
+        try:
+            await message.delete()
+        except Exception:
+            pass
 
     return notice_router
