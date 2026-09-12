@@ -17,7 +17,14 @@ async def process_telegram_media(
     mode: str,
     db_path: str,
 ):
-    media = message.video or message.audio or message.voice or message.document
+    media = (
+        message.video 
+        or message.audio 
+        or message.voice 
+        or message.document 
+        or message.animation
+    )
+    
     if not media:
         return
 

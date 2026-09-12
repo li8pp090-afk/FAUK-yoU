@@ -11,6 +11,7 @@ from aiogram.types import FSInputFile, Message
 from AUdio import handle_media_message
 from bUTToN import get_mode, scope_for_message, setup_button_handlers
 from CAsh import get_file_record, init_cache_db, save_file_record
+from NoTice import setup_notice_handlers
 from Reply import MESSAGES
 from SeTTiNGs import build_filename, is_ignored_url, normalize_url, sha256_id
 from yTFMe import convert_to_ogg_opus, download_with_ytdlp
@@ -33,7 +34,8 @@ async def init_db():
         await db.execute("""
             CREATE TABLE IF NOT EXISTS settings (
                 scope_key TEXT PRIMARY KEY,
-                mode TEXT NOT NULL DEFAULT 'default'
+                mode TEXT NOT NULL DEFAULT 'default',
+                notice_state TEXT NOT NULL DEFAULT 'disabled'
             )
         """)
         await db.commit()
@@ -194,7 +196,10 @@ async def main():
     dp = Dispatcher()
 
     button_router = setup_button_handlers(DB_PATH)
+    notice_router = setup_notice_handlers(DB_PATH)
+
     dp.include_router(button_router)
+    dp.include_router(notice_router)
     dp.include_router(router)
 
     workers = [

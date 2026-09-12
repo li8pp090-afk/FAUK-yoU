@@ -1,30 +1,45 @@
 import aiosqlite
 from aiogram import F, Router
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from Reply import MESSAGES
 
 BUTTON_TEXTS = {
     "btn_voice": "فويس",
     "btn_default": "افتراضي",
+    "btn_notice_lock": "قفل الاشعارات",
+    "btn_notice_open": "فتح الاشعارات",
     "edit_mode_text": "تستطيع تغيير وضع عمل البوت\nمن هنا",
     "unauthorized": "عزيزي\nليس مصرح لك بذلك",
 }
 
 button_router = Router()
 
-def settings_markup(mode: str) -> InlineKeyboardMarkup:
+def settings_markup(mode: str, notice_state: str = "disabled") -> InlineKeyboardMarkup:
+    notice_text = BUTTON_TEXTS["btn_notice_open"] if notice_state == "enabled" else BUTTON_TEXTS["btn_notice_lock"]
+    notice_style = "primary" if notice_state == "enabled" else "danger"
+
     return InlineKeyboardMarkup(
-        inline_keyboard=[[
-            InlineKeyboardButton(
-                text=BUTTON_TEXTS["btn_voice"],
-                callback_data="mode:voice",
-                style="primary" if mode == "voice" else "danger",
-            ),
-            InlineKeyboardButton(
-                text=BUTTON_TEXTS["btn_default"],
-                callback_data="mode:default",
-                style="primary" if mode == "default" else "danger",
-            ),
-        ]]
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=BUTTON_TEXTS["btn_voice"],
+                    callback_data="mode:voice",
+                    style="primary" if mode == "voice" else "danger",
+                ),
+                InlineKeyboardButton(
+                    text=BUTTON_TEXTS["btn_default"],
+                    callback_data="mode:default",
+                    style="primary" if mode == "default" else "danger",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text=notice_text,
+                    callback_data=f"notice:{'disable' if notice_state == 'enabled' else 'enable'}",
+                    style=notice_style,
+                )
+            ]
+        ]
     )
 
 def scope_for_message(message: Message) -> str:
@@ -56,16 +71,37 @@ async def get_mode(db_path: str, scope: str) -> str:
         row = await cur.fetchone()
         return row[0] if row else "default"
 
+async def get_notice_state(db_path: str, scope: str) -> str:
+    async with aiosqlite.connect(db_path) as db:
+        cur = await db.execute(
+            "SELECT notice_state FROM settings WHERE scope_key = ?", (scope,)
+        )
+        row = await cur.fetchone()
+        return row[0] if row else "disabled"
+
 async def set_mode(db_path: str, scope: str, mode: str):
     async with aiosqlite.connect(db_path) as db:
         await db.execute(
             """
-            INSERT INTO settings(scope_key, mode)
-            VALUES (?, ?)
+            INSERT INTO settings(scope_key, mode, notice_state)
+            VALUES (?, ?, 'disabled')
             ON CONFLICT(scope_key)
             DO UPDATE SET mode = excluded.mode
         """,
             (scope, mode),
+        )
+        await db.commit()
+
+async def set_notice_state(db_path: str, scope: str, state: str):
+    async with aiosqlite.connect(db_path) as db:
+        await db.execute(
+            """
+            INSERT INTO settings(scope_key, mode, notice_state)
+            VALUES (?, 'default', ?)
+            ON CONFLICT(scope_key)
+            DO UPDATE SET notice_state = excluded.notice_state
+        """,
+            (scope, state),
         )
         await db.commit()
 
@@ -102,9 +138,10 @@ def setup_button_handlers(db_path: str):
             return
         scope = scope_for_message(message)
         mode = await get_mode(db_path, scope)
+        notice_state = await get_notice_state(db_path, scope)
         await message.reply(
             BUTTON_TEXTS["edit_mode_text"],
-            reply_markup=settings_markup(mode),
+            reply_markup=settings_markup(mode, notice_state),
         )
 
     @button_router.callback_query(F.data.startswith("mode:"))
@@ -126,9 +163,36 @@ def setup_button_handlers(db_path: str):
             requested = "voice" if current == "default" else "default"
 
         await set_mode(db_path, scope, requested)
+        notice_state = await get_notice_state(db_path, scope)
         await callback.message.edit_reply_markup(
-            reply_markup=settings_markup(requested)
+            reply_markup=settings_markup(requested, notice_state)
         )
         await callback.answer()
+
+    @button_router.callback_query(F.data.startswith("notice:"))
+    async def notice_callback(callback: CallbackQuery):
+        if not callback.message:
+            await callback.answer()
+            return
+        if not await is_callback_admin(callback):
+            await callback.answer(
+                BUTTON_TEXTS["unauthorized"],
+                show_alert=True,
+            )
+            return
+        
+        action = callback.data.split(":", 1)[1]
+        scope = scope_for_callback(callback)
+        new_state = "enabled" if action == "enable" else "disabled"
+        
+        await set_notice_state(db_path, scope, new_state)
+        current_mode = await get_mode(db_path, scope)
+        
+        await callback.message.edit_reply_markup(
+            reply_markup=settings_markup(current_mode, new_state)
+        )
+        
+        msg_key = "notice_enabled" if new_state == "enabled" else "notice_disabled"
+        await callback.answer(MESSAGES[msg_key], show_alert=True)
 
     return button_router
