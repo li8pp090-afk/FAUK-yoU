@@ -7,7 +7,10 @@ from pathlib import Path
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.types import FSInputFile, Message
 
-from AUdio import handle_media_message
+from AUdio import (
+    handle_media_message,
+    process_telegram_album,
+)
 from bUTToN import (
     get_mode,
     init_settings_db,
@@ -44,7 +47,13 @@ WAITING_DOWNLOADS = 3
 reply_state = {}
 reply_state_lock = asyncio.Lock()
 
-download_queue = asyncio.Queue(maxsize=WAITING_DOWNLOADS)
+download_queue = asyncio.Queue(
+    maxsize=WAITING_DOWNLOADS
+)
+
+album_messages = {}
+album_tasks = {}
+album_lock = asyncio.Lock()
 
 router = Router(name="media_router")
 
@@ -80,9 +89,13 @@ async def send_saved_file(
     file_id: str,
 ):
     if mode == "voice":
-        await message.reply_voice(voice=file_id)
+        await message.reply_voice(
+            voice=file_id
+        )
     else:
-        await message.reply_document(document=file_id)
+        await message.reply_document(
+            document=file_id
+        )
 
 
 async def process_url(
@@ -109,12 +122,15 @@ async def process_url(
         return
 
     status = None
-    workdir = tempfile.mkdtemp(prefix="download_")
+    workdir = tempfile.mkdtemp(
+        prefix="download_"
+    )
 
     try:
         status = await message.reply(
             MESSAGES["start_download"]
         )
+
         path, info = await asyncio.to_thread(
             download_with_ytdlp,
             url,
@@ -124,7 +140,11 @@ async def process_url(
 
         if mode == "voice":
             output = Path(workdir) / "voice.ogg"
-            await convert_to_ogg_opus(path, output)
+
+            await convert_to_ogg_opus(
+                path,
+                output,
+            )
 
             sent = await message.reply_voice(
                 voice=FSInputFile(output),
@@ -139,7 +159,10 @@ async def process_url(
                 "voice.ogg",
             )
         else:
-            filename = build_filename(info, path)
+            filename = build_filename(
+                info,
+                path,
+            )
 
             sent = await message.reply_document(
                 document=FSInputFile(
@@ -181,7 +204,13 @@ async def submit_job(
     mode: str,
 ):
     try:
-        download_queue.put_nowait((message, value, mode))
+        download_queue.put_nowait(
+            (
+                message,
+                value,
+                mode,
+            )
+        )
     except asyncio.QueueFull:
         return
 
@@ -190,24 +219,105 @@ async def rotating_reply(message: Message):
     if not message.from_user:
         return
 
-    key = f"{message.chat.id}:{message.from_user.id}"
+    key = (
+        f"{message.chat.id}:"
+        f"{message.from_user.id}"
+    )
 
     async with reply_state_lock:
         index = reply_state.get(key, 0)
-        reply_state[key] = (index + 1) % len(
+
+        reply_state[key] = (
+            index + 1
+        ) % len(
             MESSAGES["bot_replies"]
         )
 
-    await message.reply(MESSAGES["bot_replies"][index])
+    await message.reply(
+        MESSAGES["bot_replies"][index]
+    )
 
 
 async def worker():
     while True:
-        message, value, mode = await download_queue.get()
+        message, value, mode = (
+            await download_queue.get()
+        )
+
         try:
-            await process_url(message, value, mode)
+            await process_url(
+                message,
+                value,
+                mode,
+            )
         finally:
             download_queue.task_done()
+
+
+async def collect_album(
+    message: Message,
+):
+    album_id = message.media_group_id
+
+    if not album_id:
+        return
+
+    key = (
+        message.chat.id,
+        album_id,
+    )
+
+    async with album_lock:
+        album_messages.setdefault(
+            key,
+            [],
+        ).append(message)
+
+        task = album_tasks.get(key)
+
+        if task and not task.done():
+            task.cancel()
+
+        album_tasks[key] = (
+            asyncio.create_task(
+                finish_album(key)
+            )
+        )
+
+
+async def finish_album(key):
+    try:
+        await asyncio.sleep(0.8)
+
+        async with album_lock:
+            messages = album_messages.pop(
+                key,
+                [],
+            )
+
+            album_tasks.pop(
+                key,
+                None,
+            )
+
+        if not messages:
+            return
+
+        mode = await get_mode(
+            DB_PATH,
+            scope_for_message(
+                messages[0]
+            ),
+        )
+
+        await process_telegram_album(
+            messages,
+            DB_PATH,
+            mode,
+        )
+
+    except asyncio.CancelledError:
+        raise
 
 
 @router.message(
@@ -216,13 +326,45 @@ async def worker():
     | F.voice
     | F.document
 )
-async def media_handler(message: Message):
-    await handle_media_message(message, DB_PATH)
+async def media_handler(
+    message: Message,
+):
+    if message.media_group_id:
+        await collect_album(message)
+        return
+
+    await handle_media_message(
+        message,
+        DB_PATH,
+    )
+
+
+@router.channel_post(
+    F.video
+    | F.audio
+    | F.voice
+    | F.document
+)
+async def channel_media_handler(
+    message: Message,
+):
+    if message.media_group_id:
+        await collect_album(message)
+        return
+
+    await handle_media_message(
+        message,
+        DB_PATH,
+    )
 
 
 @router.message(F.text)
-async def text_handler(message: Message):
-    text = (message.text or "").strip()
+async def text_handler(
+    message: Message,
+):
+    text = (
+        message.text or ""
+    ).strip()
 
     if not text:
         return
@@ -234,25 +376,29 @@ async def text_handler(message: Message):
             DB_PATH,
             scope_for_message(message),
         )
-        await submit_job(message, url, mode)
+
+        await submit_job(
+            message,
+            url,
+            mode,
+        )
+
         return
 
-    if message.chat.type == "private" or text == "بوت":
+    if (
+        message.chat.type == "private"
+        or text == "بوت"
+    ):
         await rotating_reply(message)
 
 
-@router.channel_post(
-    F.video
-    | F.audio
-    | F.document
-)
-async def channel_media_handler(message: Message):
-    await handle_media_message(message, DB_PATH)
-
-
 @router.channel_post(F.text)
-async def channel_text_handler(message: Message):
-    text = (message.text or "").strip()
+async def channel_text_handler(
+    message: Message,
+):
+    text = (
+        message.text or ""
+    ).strip()
 
     if not text:
         return
@@ -266,26 +412,40 @@ async def channel_text_handler(message: Message):
         DB_PATH,
         scope_for_message(message),
     )
-    await submit_job(message, url, mode)
+
+    await submit_job(
+        message,
+        url,
+        mode,
+    )
 
 
 async def main():
     if not BOT_TOKEN:
-        raise RuntimeError("BOT_TOKEN is not set")
+        raise RuntimeError(
+            "BOT_TOKEN is not set"
+        )
 
     await init_db()
 
     bot = Bot(BOT_TOKEN)
     dispatcher = Dispatcher()
 
-    dispatcher.include_router(edit_router)
+    dispatcher.include_router(
+        edit_router
+    )
+
     dispatcher.include_router(
         setup_button_handlers(DB_PATH)
     )
+
     dispatcher.include_router(
         setup_notice_handlers(DB_PATH)
     )
-    dispatcher.include_router(router)
+
+    dispatcher.include_router(
+        router
+    )
 
     workers = [
         asyncio.create_task(worker())
@@ -295,14 +455,18 @@ async def main():
     await send_takeoff_message(bot)
 
     try:
-        await dispatcher.start_polling(bot)
+        await dispatcher.start_polling(
+            bot
+        )
     finally:
         for task in workers:
             task.cancel()
 
         await asyncio.gather(
-            *workers, return_exceptions=True
+            *workers,
+            return_exceptions=True,
         )
+
         await bot.session.close()
 
 
