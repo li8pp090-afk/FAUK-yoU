@@ -163,9 +163,9 @@ def settings_markup(
             [
                 InlineKeyboardButton(
                     text=(
-                        BUTTON_TEXTS["btn_notice_open"]
+                        BUTTON_TEXTS["btn_notice_lock"]
                         if notice_enabled
-                        else BUTTON_TEXTS["btn_notice_lock"]
+                        else BUTTON_TEXTS["btn_notice_open"]
                     ),
                     callback_data=(
                         "notice:disable"
