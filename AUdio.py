@@ -1,4 +1,4 @@
-import shutil
+import mimetypes
 import tempfile
 from pathlib import Path
 
@@ -9,26 +9,41 @@ from Reply import MESSAGES
 from yTFMe import convert_to_ogg_opus
 
 
+def is_media_file(message: Message) -> bool:
+    if message.video or message.audio or message.voice:
+        return True
+
+    if message.document:
+        mime = (message.document.mime_type or "").lower()
+
+        if mime.startswith("audio/") or mime.startswith("video/"):
+            return True
+
+        file_name = message.document.file_name or ""
+        guessed_type, _ = mimetypes.guess_type(file_name)
+
+        if guessed_type and (
+            guessed_type.startswith("audio/")
+            or guessed_type.startswith("video/")
+        ):
+            return True
+
+    return False
+
+
 async def process_telegram_media(
     message: Message,
     db_path: str,
 ):
+    if not is_media_file(message):
+        return
+
     media = (
         message.video
         or message.audio
         or message.voice
         or message.document
-        or message.animation
     )
-
-    if not media:
-        return
-
-    if message.document and not (
-        (message.document.mime_type or "").startswith("audio/")
-        or (message.document.mime_type or "").startswith("video/")
-    ):
-        return
 
     content_id = media.file_id
 
@@ -49,63 +64,50 @@ async def process_telegram_media(
         MESSAGES["start_download"],
     )
 
-    workdir = tempfile.mkdtemp(
-        prefix="media_",
-    )
+    with tempfile.TemporaryDirectory(prefix="media_") as temp_dir:
+        workdir = Path(temp_dir)
 
-    try:
-        file_info = await message.bot.get_file(
-            media.file_id,
-        )
-
-        input_path = (
-            Path(workdir)
-            / Path(file_info.file_path).name
-        )
-
-        await message.bot.download_file(
-            file_info.file_path,
-            destination=input_path,
-        )
-
-        output_voice = (
-            Path(workdir)
-            / "voice.ogg"
-        )
-
-        await convert_to_ogg_opus(
-            input_path,
-            output_voice,
-        )
-
-        sent = await message.reply_voice(
-            voice=FSInputFile(output_voice),
-        )
-
-        await save_file_record(
-            db_path,
-            "voice",
-            "telegram_media",
-            content_id,
-            sent.voice.file_id,
-            "voice.ogg",
-        )
-
-    except Exception:
-        await message.reply(
-            MESSAGES["fail_download"],
-        )
-
-    finally:
         try:
-            await status.delete()
-        except Exception:
-            pass
+            file_info = await message.bot.get_file(
+                media.file_id,
+            )
 
-        shutil.rmtree(
-            workdir,
-            ignore_errors=True,
-        )
+            input_path = workdir / Path(file_info.file_path).name
+            output_voice = workdir / "voice.ogg"
+
+            await message.bot.download_file(
+                file_info.file_path,
+                destination=input_path,
+            )
+
+            await convert_to_ogg_opus(
+                input_path,
+                output_voice,
+            )
+
+            sent = await message.reply_voice(
+                voice=FSInputFile(output_voice),
+            )
+
+            await save_file_record(
+                db_path,
+                "voice",
+                "telegram_media",
+                content_id,
+                sent.voice.file_id,
+                "voice.ogg",
+            )
+
+        except Exception:
+            await message.reply(
+                MESSAGES["fail_download"],
+            )
+
+        finally:
+            try:
+                await status.delete()
+            except Exception:
+                pass
 
 
 async def handle_media_message(

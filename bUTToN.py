@@ -1,7 +1,12 @@
 import aiosqlite
 from aiogram import F, Router
 from aiogram.enums import ButtonStyle, ChatMemberStatus
-from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from aiogram.types import (
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+)
 
 from Reply import MESSAGES
 
@@ -21,7 +26,6 @@ def scope_for_message(message: Message) -> str:
         return f"user:{message.from_user.id}"
 
     thread_id = getattr(message, "message_thread_id", None)
-
     if thread_id:
         return f"chat:{message.chat.id}:topic:{thread_id}"
 
@@ -36,7 +40,6 @@ def scope_for_callback(callback: CallbackQuery) -> str:
         return f"user:{callback.from_user.id}"
 
     thread_id = getattr(callback.message, "message_thread_id", None)
-
     if thread_id:
         return f"chat:{callback.message.chat.id}:topic:{thread_id}"
 
@@ -45,25 +48,30 @@ def scope_for_callback(callback: CallbackQuery) -> str:
 
 async def init_settings_db(db_path: str):
     async with aiosqlite.connect(db_path) as db:
-        await db.execute("""
+        await db.execute(
+            """
             CREATE TABLE IF NOT EXISTS settings (
                 scope_key TEXT PRIMARY KEY,
                 mode TEXT NOT NULL DEFAULT 'default',
                 notice_state TEXT NOT NULL DEFAULT 'disabled'
             )
-        """)
+            """
+        )
         await db.commit()
 
 
 async def ensure_scope(db, scope: str):
-    await db.execute("""
+    await db.execute(
+        """
         INSERT OR IGNORE INTO settings (
             scope_key,
             mode,
             notice_state
         )
         VALUES (?, 'default', 'disabled')
-    """, (scope,))
+        """,
+        (scope,),
+    )
 
 
 async def get_mode(db_path: str, scope: str) -> str:
@@ -75,7 +83,6 @@ async def get_mode(db_path: str, scope: str) -> str:
             "SELECT mode FROM settings WHERE scope_key = ?",
             (scope,),
         )
-
         row = await cursor.fetchone()
 
     return row[0]
@@ -93,7 +100,6 @@ async def set_mode(db_path: str, scope: str, mode: str):
             """,
             (mode, scope),
         )
-
         await db.commit()
 
 
@@ -106,17 +112,12 @@ async def get_notice_state(db_path: str, scope: str) -> str:
             "SELECT notice_state FROM settings WHERE scope_key = ?",
             (scope,),
         )
-
         row = await cursor.fetchone()
 
     return row[0]
 
 
-async def set_notice_state(
-    db_path: str,
-    scope: str,
-    state: str,
-):
+async def set_notice_state(db_path: str, scope: str, state: str):
     async with aiosqlite.connect(db_path) as db:
         await ensure_scope(db, scope)
 
@@ -128,7 +129,6 @@ async def set_notice_state(
             """,
             (state, scope),
         )
-
         await db.commit()
 
 
@@ -136,7 +136,6 @@ def settings_markup(
     mode: str,
     notice_state: str,
 ) -> InlineKeyboardMarkup:
-
     notice_enabled = notice_state == "enabled"
 
     return InlineKeyboardMarkup(
@@ -196,12 +195,10 @@ async def is_admin(message: Message) -> bool:
             message.chat.id,
             message.from_user.id,
         )
-
         return member.status in {
             ChatMemberStatus.CREATOR,
             ChatMemberStatus.ADMINISTRATOR,
         }
-
     except Exception:
         return False
 
@@ -218,12 +215,10 @@ async def is_callback_admin(callback: CallbackQuery) -> bool:
             callback.message.chat.id,
             callback.from_user.id,
         )
-
         return member.status in {
             ChatMemberStatus.CREATOR,
             ChatMemberStatus.ADMINISTRATOR,
         }
-
     except Exception:
         return False
 
@@ -237,16 +232,8 @@ def setup_button_handlers(db_path: str):
             return
 
         scope = scope_for_message(message)
-
-        mode = await get_mode(
-            db_path,
-            scope,
-        )
-
-        notice_state = await get_notice_state(
-            db_path,
-            scope,
-        )
+        mode = await get_mode(db_path, scope)
+        notice_state = await get_notice_state(db_path, scope)
 
         await message.reply(
             BUTTON_TEXTS["edit_mode_text"],
@@ -270,13 +257,8 @@ def setup_button_handlers(db_path: str):
             return
 
         requested = callback.data.split(":", 1)[1]
-
         scope = scope_for_callback(callback)
-
-        current = await get_mode(
-            db_path,
-            scope,
-        )
+        current = await get_mode(db_path, scope)
 
         if requested == current:
             requested = (
@@ -285,16 +267,8 @@ def setup_button_handlers(db_path: str):
                 else "default"
             )
 
-        await set_mode(
-            db_path,
-            scope,
-            requested,
-        )
-
-        notice_state = await get_notice_state(
-            db_path,
-            scope,
-        )
+        await set_mode(db_path, scope, requested)
+        notice_state = await get_notice_state(db_path, scope)
 
         await callback.message.edit_reply_markup(
             reply_markup=settings_markup(
@@ -319,25 +293,15 @@ def setup_button_handlers(db_path: str):
             return
 
         action = callback.data.split(":", 1)[1]
-
         scope = scope_for_callback(callback)
-
         new_state = (
             "enabled"
             if action == "enable"
             else "disabled"
         )
 
-        await set_notice_state(
-            db_path,
-            scope,
-            new_state,
-        )
-
-        current_mode = await get_mode(
-            db_path,
-            scope,
-        )
+        await set_notice_state(db_path, scope, new_state)
+        current_mode = await get_mode(db_path, scope)
 
         await callback.message.edit_reply_markup(
             reply_markup=settings_markup(
