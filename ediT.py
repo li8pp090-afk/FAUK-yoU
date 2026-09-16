@@ -8,7 +8,6 @@ from pathlib import Path
 from aiogram import Bot, F, Router
 from aiogram.enums import ChatType
 from aiogram.types import FSInputFile, Message
-from pydub import AudioSegment
 
 from Reply import MESSAGES
 
@@ -104,25 +103,31 @@ async def create_edited_voice(
             source_path,
         )
 
-        audio = await asyncio.to_thread(
-            AudioSegment.from_file,
-            source_path,
+        duration = end - start
+        process = await asyncio.create_subprocess_exec(
+            "ffmpeg",
+            "-y",
+            "-ss",
+            str(start),
+            "-i",
+            str(source_path),
+            "-t",
+            str(duration),
+            "-vn",
+            "-c:a",
+            "libopus",
+            "-f",
+            "ogg",
+            str(output_path),
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
         )
 
-        duration = len(audio) / 1000
+        code = await process.wait()
 
-        if end > duration:
-            await message.reply(MESSAGES["edit_duration_too_long"])
+        if code != 0 or not output_path.exists():
+            await message.reply(MESSAGES["edit_duration_invalid"])
             return False
-
-        edited_audio = audio[start * 1000 : end * 1000]
-
-        await asyncio.to_thread(
-            edited_audio.export,
-            output_path,
-            format="ogg",
-            codec="libopus",
-        )
 
         await message.reply_voice(
             voice=FSInputFile(output_path),

@@ -108,12 +108,13 @@ async def process_url(
         )
         return
 
-    status = await message.reply(
-        MESSAGES["start_download"]
-    )
+    status = None
     workdir = tempfile.mkdtemp(prefix="download_")
 
     try:
+        status = await message.reply(
+            MESSAGES["start_download"]
+        )
         path, info = await asyncio.to_thread(
             download_with_ytdlp,
             url,
@@ -162,10 +163,11 @@ async def process_url(
         )
 
     finally:
-        try:
-            await status.delete()
-        except Exception:
-            pass
+        if status:
+            try:
+                await status.delete()
+            except Exception:
+                pass
 
         shutil.rmtree(
             workdir,
@@ -213,7 +215,6 @@ async def worker():
     | F.audio
     | F.voice
     | F.document
-    | F.animation
 )
 async def media_handler(message: Message):
     await handle_media_message(message, DB_PATH)
@@ -244,7 +245,6 @@ async def text_handler(message: Message):
     F.video
     | F.audio
     | F.document
-    | F.animation
 )
 async def channel_media_handler(message: Message):
     await handle_media_message(message, DB_PATH)
