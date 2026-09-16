@@ -2,3 +2,4 @@ aiogram
 aiosqlite
 yt-dlp
 pydub
+pyaudioop
