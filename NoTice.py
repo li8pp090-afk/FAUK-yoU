@@ -6,6 +6,7 @@ from bUTToN import get_notice_state, scope_for_message
 
 
 ALLOWED_CHAT_TYPES = {
+    ChatType.PRIVATE,
     ChatType.GROUP,
     ChatType.SUPERGROUP,
     ChatType.CHANNEL,
@@ -15,6 +16,8 @@ ALLOWED_CHAT_TYPES = {
 SERVICE_FIELDS = (
     "new_chat_members",
     "left_chat_member",
+    "chat_owner_left",
+    "chat_owner_changed",
     "new_chat_title",
     "new_chat_photo",
     "delete_chat_photo",
@@ -23,6 +26,9 @@ SERVICE_FIELDS = (
     "migrate_to_chat_id",
     "migrate_from_chat_id",
     "pinned_message",
+    "invoice",
+    "successful_payment",
+    "refunded_payment",
     "users_shared",
     "chat_shared",
     "gift",
@@ -45,6 +51,7 @@ SERVICE_FIELDS = (
     "giveaway_created",
     "giveaway_winners",
     "giveaway_completed",
+    "managed_bot_created",
     "paid_message_price_changed",
     "suggested_post_approved",
     "suggested_post_approval_failed",
@@ -69,6 +76,10 @@ def setup_notice_handlers(db_path: str):
     router = Router(name="notice_router")
 
     @router.message(
+        F.chat.type.in_(ALLOWED_CHAT_TYPES),
+        is_service_message,
+    )
+    @router.channel_post(
         F.chat.type.in_(ALLOWED_CHAT_TYPES),
         is_service_message,
     )

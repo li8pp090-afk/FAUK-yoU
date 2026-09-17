@@ -9,7 +9,8 @@ from aiogram import Bot, F, Router
 from aiogram.enums import ChatType
 from aiogram.types import FSInputFile, Message
 
-from Reply import MESSAGES
+from Reply import COMMAND_EDIT_AUDIO, MESSAGES
+from yTFMe import cut_audio_segment
 
 
 router = Router(name="edit_voice_router")
@@ -104,28 +105,14 @@ async def create_edited_voice(
         )
 
         duration = end - start
-        process = await asyncio.create_subprocess_exec(
-            "ffmpeg",
-            "-y",
-            "-ss",
-            str(start),
-            "-i",
-            str(source_path),
-            "-t",
-            str(duration),
-            "-vn",
-            "-c:a",
-            "libopus",
-            "-f",
-            "ogg",
-            str(output_path),
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
+        success = await cut_audio_segment(
+            source_path=source_path,
+            output_path=output_path,
+            start=start,
+            duration=duration,
         )
 
-        code = await process.wait()
-
-        if code != 0 or not output_path.exists():
+        if not success:
             await message.reply(MESSAGES["edit_duration_invalid"])
             return False
 
@@ -137,9 +124,13 @@ async def create_edited_voice(
 
 
 @router.message(
-    F.chat.type.in_({ChatType.PRIVATE, ChatType.GROUP, ChatType.SUPERGROUP}),
+    F.chat.type.in_({ChatType.PRIVATE, ChatType.GROUP, ChatType.SUPERGROUP, ChatType.CHANNEL}),
     F.reply_to_message,
-    F.text.casefold() == "تعديل",
+    F.text.casefold() == COMMAND_EDIT_AUDIO,
+)
+@router.channel_post(
+    F.reply_to_message,
+    F.text.casefold() == COMMAND_EDIT_AUDIO,
 )
 async def start_edit(message: Message):
     replied_message = message.reply_to_message
@@ -157,7 +148,11 @@ async def start_edit(message: Message):
 
 
 @router.message(
-    F.chat.type.in_({ChatType.PRIVATE, ChatType.GROUP, ChatType.SUPERGROUP}),
+    F.chat.type.in_({ChatType.PRIVATE, ChatType.GROUP, ChatType.SUPERGROUP, ChatType.CHANNEL}),
+    F.text,
+    lambda msg: get_session_key(msg) in EDIT_SESSIONS,
+)
+@router.channel_post(
     F.text,
     lambda msg: get_session_key(msg) in EDIT_SESSIONS,
 )

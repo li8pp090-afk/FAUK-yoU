@@ -24,7 +24,7 @@ from CAsh import (
 )
 from ediT import router as edit_router
 from NoTice import setup_notice_handlers
-from Reply import MESSAGES
+from Reply import COMMAND_BOT_TRIGGER, MESSAGES
 from SeTTiNGs import (
     build_filename,
     is_ignored_url,
@@ -216,12 +216,11 @@ async def submit_job(
 
 
 async def rotating_reply(message: Message):
-    if not message.from_user:
-        return
+    user_id = message.from_user.id if message.from_user else "channel"
 
     key = (
         f"{message.chat.id}:"
-        f"{message.from_user.id}"
+        f"{user_id}"
     )
 
     async with reply_state_lock:
@@ -387,7 +386,7 @@ async def text_handler(
 
     if (
         message.chat.type == "private"
-        or text == "بوت"
+        or text == COMMAND_BOT_TRIGGER
     ):
         await rotating_reply(message)
 
@@ -405,19 +404,22 @@ async def channel_text_handler(
 
     url = normalize_url(text)
 
-    if not url or is_ignored_url(url):
+    if url and not is_ignored_url(url):
+        mode = await get_mode(
+            DB_PATH,
+            scope_for_message(message),
+        )
+
+        await submit_job(
+            message,
+            url,
+            mode,
+        )
+
         return
 
-    mode = await get_mode(
-        DB_PATH,
-        scope_for_message(message),
-    )
-
-    await submit_job(
-        message,
-        url,
-        mode,
-    )
+    if text == COMMAND_BOT_TRIGGER:
+        await rotating_reply(message)
 
 
 async def main():

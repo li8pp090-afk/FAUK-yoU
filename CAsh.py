@@ -28,11 +28,12 @@ async def get_file_record(
             """
             SELECT file_id, filename
             FROM file_cache
-            WHERE mode = ? AND source_type = ? AND content_id = ?
+            WHERE mode = ?
+              AND source_type = ?
+              AND content_id = ?
             """,
             (mode, source_type, content_id),
         )
-
         return await cursor.fetchone()
 
 
@@ -42,7 +43,7 @@ async def save_file_record(
     source_type: str,
     content_id: str,
     file_id: str,
-    filename: str,
+    filename: str | None = None,
 ):
     async with aiosqlite.connect(db_path) as db:
         await db.execute(
@@ -55,7 +56,11 @@ async def save_file_record(
                 filename
             )
             VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT (mode, source_type, content_id)
+            ON CONFLICT (
+                mode,
+                source_type,
+                content_id
+            )
             DO UPDATE SET
                 file_id = excluded.file_id,
                 filename = excluded.filename
@@ -68,5 +73,4 @@ async def save_file_record(
                 filename,
             ),
         )
-
         await db.commit()

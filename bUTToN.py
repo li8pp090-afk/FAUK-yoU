@@ -8,22 +8,15 @@ from aiogram.types import (
     Message,
 )
 
-from Reply import MESSAGES
-
-
-BUTTON_TEXTS = {
-    "btn_voice": "فويس",
-    "btn_default": "افتراضي",
-    "btn_notice_lock": "قفل الاشعارات",
-    "btn_notice_open": "فتح الاشعارات",
-    "edit_mode_text": "تستطيع تغيير وضع عمل البوت\nمن هنا",
-    "unauthorized": "عزيزي\nليس مصرح لك بذلك",
-}
+from Reply import BUTTON_TEXTS, COMMAND_EDIT_MODE
 
 
 def scope_for_message(message: Message) -> str:
     if message.chat.type == "private":
         return f"user:{message.from_user.id}"
+
+    if message.chat.type == "channel":
+        return f"channel:{message.chat.id}"
 
     thread_id = getattr(message, "message_thread_id", None)
     if thread_id:
@@ -38,6 +31,9 @@ def scope_for_callback(callback: CallbackQuery) -> str:
 
     if callback.message.chat.type == "private":
         return f"user:{callback.from_user.id}"
+
+    if callback.message.chat.type == "channel":
+        return f"channel:{callback.message.chat.id}"
 
     thread_id = getattr(callback.message, "message_thread_id", None)
     if thread_id:
@@ -184,7 +180,7 @@ def settings_markup(
 
 
 async def is_admin(message: Message) -> bool:
-    if message.chat.type == "private":
+    if message.chat.type in {"private", "channel"}:
         return True
 
     if not message.from_user:
@@ -207,7 +203,7 @@ async def is_callback_admin(callback: CallbackQuery) -> bool:
     if not callback.message:
         return False
 
-    if callback.message.chat.type == "private":
+    if callback.message.chat.type in {"private", "channel"}:
         return True
 
     try:
@@ -226,7 +222,8 @@ async def is_callback_admin(callback: CallbackQuery) -> bool:
 def setup_button_handlers(db_path: str):
     router = Router(name="button_router")
 
-    @router.message(F.text == "ادت")
+    @router.message(F.text == COMMAND_EDIT_MODE)
+    @router.channel_post(F.text == COMMAND_EDIT_MODE)
     async def edit_mode(message: Message):
         if not await is_admin(message):
             return
@@ -310,15 +307,6 @@ def setup_button_handlers(db_path: str):
             )
         )
 
-        message_key = (
-            "notice_enabled"
-            if new_state == "enabled"
-            else "notice_disabled"
-        )
-
-        await callback.answer(
-            MESSAGES[message_key],
-            show_alert=True,
-        )
+        await callback.answer()
 
     return router

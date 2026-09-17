@@ -92,3 +92,32 @@ async def convert_to_ogg_opus(
         raise RuntimeError(
             "opus conversion failed"
         )
+
+
+async def cut_audio_segment(
+    source_path: Path,
+    output_path: Path,
+    start: int,
+    duration: int,
+) -> bool:
+    process = await asyncio.create_subprocess_exec(
+        "ffmpeg",
+        "-y",
+        "-ss",
+        str(start),
+        "-i",
+        str(source_path),
+        "-t",
+        str(duration),
+        "-vn",
+        "-c:a",
+        "libopus",
+        "-f",
+        "ogg",
+        str(output_path),
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+
+    code = await process.wait()
+    return code == 0 and output_path.exists()
