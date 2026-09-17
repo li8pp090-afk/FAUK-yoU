@@ -1,4 +1,3 @@
-import aiosqlite
 from aiogram import F, Router
 from aiogram.enums import ButtonStyle, ChatMemberStatus
 from aiogram.types import (
@@ -8,12 +7,18 @@ from aiogram.types import (
     Message,
 )
 
+from CAsh import (
+    get_mode,
+    get_notice_state,
+    set_mode,
+    set_notice_state,
+)
 from Reply import BUTTON_TEXTS, COMMAND_EDIT_MODE
 
 
 def scope_for_message(message: Message) -> str:
     if message.chat.type == "private":
-        return f"user:{message.from_user.id}"
+        return f"user:{message.chat.id}"
 
     if message.chat.type == "channel":
         return f"channel:{message.chat.id}"
@@ -29,103 +34,7 @@ def scope_for_callback(callback: CallbackQuery) -> str:
     if not callback.message:
         return f"user:{callback.from_user.id}"
 
-    if callback.message.chat.type == "private":
-        return f"user:{callback.from_user.id}"
-
-    if callback.message.chat.type == "channel":
-        return f"channel:{callback.message.chat.id}"
-
-    thread_id = getattr(callback.message, "message_thread_id", None)
-    if thread_id:
-        return f"chat:{callback.message.chat.id}:topic:{thread_id}"
-
-    return f"chat:{callback.message.chat.id}"
-
-
-async def init_settings_db(db_path: str):
-    async with aiosqlite.connect(db_path) as db:
-        await db.execute(
-            """
-            CREATE TABLE IF NOT EXISTS settings (
-                scope_key TEXT PRIMARY KEY,
-                mode TEXT NOT NULL DEFAULT 'default',
-                notice_state TEXT NOT NULL DEFAULT 'disabled'
-            )
-            """
-        )
-        await db.commit()
-
-
-async def ensure_scope(db, scope: str):
-    await db.execute(
-        """
-        INSERT OR IGNORE INTO settings (
-            scope_key,
-            mode,
-            notice_state
-        )
-        VALUES (?, 'default', 'disabled')
-        """,
-        (scope,),
-    )
-
-
-async def get_mode(db_path: str, scope: str) -> str:
-    async with aiosqlite.connect(db_path) as db:
-        await ensure_scope(db, scope)
-        await db.commit()
-
-        cursor = await db.execute(
-            "SELECT mode FROM settings WHERE scope_key = ?",
-            (scope,),
-        )
-        row = await cursor.fetchone()
-
-    return row[0]
-
-
-async def set_mode(db_path: str, scope: str, mode: str):
-    async with aiosqlite.connect(db_path) as db:
-        await ensure_scope(db, scope)
-
-        await db.execute(
-            """
-            UPDATE settings
-            SET mode = ?
-            WHERE scope_key = ?
-            """,
-            (mode, scope),
-        )
-        await db.commit()
-
-
-async def get_notice_state(db_path: str, scope: str) -> str:
-    async with aiosqlite.connect(db_path) as db:
-        await ensure_scope(db, scope)
-        await db.commit()
-
-        cursor = await db.execute(
-            "SELECT notice_state FROM settings WHERE scope_key = ?",
-            (scope,),
-        )
-        row = await cursor.fetchone()
-
-    return row[0]
-
-
-async def set_notice_state(db_path: str, scope: str, state: str):
-    async with aiosqlite.connect(db_path) as db:
-        await ensure_scope(db, scope)
-
-        await db.execute(
-            """
-            UPDATE settings
-            SET notice_state = ?
-            WHERE scope_key = ?
-            """,
-            (state, scope),
-        )
-        await db.commit()
+    return scope_for_message(callback.message)
 
 
 def settings_markup(
@@ -291,6 +200,7 @@ def setup_button_handlers(db_path: str):
 
         action = callback.data.split(":", 1)[1]
         scope = scope_for_callback(callback)
+
         new_state = (
             "enabled"
             if action == "enable"

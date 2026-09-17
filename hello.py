@@ -7,35 +7,30 @@ from pathlib import Path
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.types import FSInputFile, Message
 
-from AUdio import (
-    handle_media_message,
-    process_telegram_album,
-)
-from bUTToN import (
-    get_mode,
-    init_settings_db,
+from AUdio_3 import setup_audio_handlers
+from bUTToN_2 import (
     scope_for_message,
     setup_button_handlers,
 )
-from CAsh import (
+from CAsh_2 import (
     get_file_record,
+    get_mode,
     init_cache_db,
     save_file_record,
 )
-from ediT import router as edit_router
-from NoTice import setup_notice_handlers
-from Reply import COMMAND_BOT_TRIGGER, MESSAGES
-from SeTTiNGs import (
+from ediT_2 import router as edit_router
+from NoTice_2 import setup_notice_handlers
+from Reply_2 import COMMAND_BOT_TRIGGER, MESSAGES
+from SeTTiNGs_2 import (
     build_filename,
     is_ignored_url,
     normalize_url,
     sha256_id,
 )
-from yTFMe import (
+from yTFMe_2 import (
     convert_to_ogg_opus,
     download_with_ytdlp,
 )
-
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 DB_PATH = os.getenv("DB_PATH", "bot.sqlite3")
@@ -51,15 +46,10 @@ download_queue = asyncio.Queue(
     maxsize=WAITING_DOWNLOADS
 )
 
-album_messages = {}
-album_tasks = {}
-album_lock = asyncio.Lock()
-
-router = Router(name="media_router")
+router = Router(name="text_router")
 
 
 async def init_db():
-    await init_settings_db(DB_PATH)
     await init_cache_db(DB_PATH)
 
 
@@ -253,110 +243,6 @@ async def worker():
             download_queue.task_done()
 
 
-async def collect_album(
-    message: Message,
-):
-    album_id = message.media_group_id
-
-    if not album_id:
-        return
-
-    key = (
-        message.chat.id,
-        album_id,
-    )
-
-    async with album_lock:
-        album_messages.setdefault(
-            key,
-            [],
-        ).append(message)
-
-        task = album_tasks.get(key)
-
-        if task and not task.done():
-            task.cancel()
-
-        album_tasks[key] = (
-            asyncio.create_task(
-                finish_album(key)
-            )
-        )
-
-
-async def finish_album(key):
-    try:
-        await asyncio.sleep(0.8)
-
-        async with album_lock:
-            messages = album_messages.pop(
-                key,
-                [],
-            )
-
-            album_tasks.pop(
-                key,
-                None,
-            )
-
-        if not messages:
-            return
-
-        mode = await get_mode(
-            DB_PATH,
-            scope_for_message(
-                messages[0]
-            ),
-        )
-
-        await process_telegram_album(
-            messages,
-            DB_PATH,
-            mode,
-        )
-
-    except asyncio.CancelledError:
-        raise
-
-
-@router.message(
-    F.video
-    | F.audio
-    | F.voice
-    | F.document
-)
-async def media_handler(
-    message: Message,
-):
-    if message.media_group_id:
-        await collect_album(message)
-        return
-
-    await handle_media_message(
-        message,
-        DB_PATH,
-    )
-
-
-@router.channel_post(
-    F.video
-    | F.audio
-    | F.voice
-    | F.document
-)
-async def channel_media_handler(
-    message: Message,
-):
-    if message.media_group_id:
-        await collect_album(message)
-        return
-
-    await handle_media_message(
-        message,
-        DB_PATH,
-    )
-
-
 @router.message(F.text)
 async def text_handler(
     message: Message,
@@ -443,6 +329,10 @@ async def main():
 
     dispatcher.include_router(
         setup_notice_handlers(DB_PATH)
+    )
+
+    dispatcher.include_router(
+        setup_audio_handlers(DB_PATH)
     )
 
     dispatcher.include_router(

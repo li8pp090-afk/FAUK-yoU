@@ -1,16 +1,38 @@
+import asyncio
 import mimetypes
 import tempfile
 from pathlib import Path
 
+from aiogram import F, Router
 from aiogram.types import (
     FSInputFile,
     InputMediaDocument,
     Message,
 )
 
-from CAsh import get_file_record, save_file_record
+from CAsh import get_file_record, get_mode, save_file_record
 from Reply import MESSAGES
 from yTFMe import convert_to_ogg_opus
+
+router = Router(name="audio_media_router")
+
+album_messages = {}
+album_tasks = {}
+album_lock = asyncio.Lock()
+
+
+def scope_for_message(message: Message) -> str:
+    if message.chat.type == "private":
+        return f"user:{message.chat.id}"
+
+    if message.chat.type == "channel":
+        return f"channel:{message.chat.id}"
+
+    thread_id = getattr(message, "message_thread_id", None)
+    if thread_id:
+        return f"chat:{message.chat.id}:topic:{thread_id}"
+
+    return f"chat:{message.chat.id}"
 
 
 def is_media_file(message: Message) -> bool:
@@ -173,8 +195,6 @@ async def process_telegram_album(
                 "telegram_media",
                 content_id,
             )
-
-            source_name = None
 
             if existing:
                 filename = (
@@ -385,18 +405,25 @@ async def process_telegram_media(
     )
 
     content_id = media.file_id
+    scope = scope_for_message(message)
+    mode = await get_mode(db_path, scope)
 
     existing = await get_file_record(
         db_path,
-        "voice",
+        mode,
         "telegram_media",
         content_id,
     )
 
     if existing:
-        await message.reply_voice(
-            voice=existing[0],
-        )
+        if mode == "voice":
+            await message.reply_voice(
+                voice=existing[0],
+            )
+        else:
+            await message.reply_document(
+                document=existing[0],
+            )
         return
 
     status = await message.reply(
@@ -422,34 +449,56 @@ async def process_telegram_media(
                 ).name
             )
 
-            output_voice = (
-                workdir / "voice.ogg"
-            )
-
             await message.bot.download_file(
                 file_info.file_path,
                 destination=input_path,
             )
 
-            await convert_to_ogg_opus(
-                input_path,
-                output_voice,
-            )
+            if mode == "voice":
+                output_voice = (
+                    workdir / "voice.ogg"
+                )
 
-            sent = await message.reply_voice(
-                voice=FSInputFile(
-                    output_voice
-                ),
-            )
+                await convert_to_ogg_opus(
+                    input_path,
+                    output_voice,
+                )
 
-            await save_file_record(
-                db_path,
-                "voice",
-                "telegram_media",
-                content_id,
-                sent.voice.file_id,
-                "voice.ogg",
-            )
+                sent = await message.reply_voice(
+                    voice=FSInputFile(
+                        output_voice
+                    ),
+                )
+
+                await save_file_record(
+                    db_path,
+                    mode,
+                    "telegram_media",
+                    content_id,
+                    sent.voice.file_id,
+                    "voice.ogg",
+                )
+            else:
+                filename = get_media_name(
+                    message,
+                    file_info.file_path,
+                )
+
+                sent = await message.reply_document(
+                    document=FSInputFile(
+                        input_path,
+                        filename=filename,
+                    ),
+                )
+
+                await save_file_record(
+                    db_path,
+                    mode,
+                    "telegram_media",
+                    content_id,
+                    sent.document.file_id,
+                    filename,
+                )
 
         except Exception:
             await message.reply(
@@ -471,3 +520,110 @@ async def handle_media_message(
         message,
         db_path,
     )
+
+
+async def finish_album(key, db_path: str):
+    try:
+        await asyncio.sleep(0.12)
+
+        async with album_lock:
+            messages = album_messages.pop(
+                key,
+                [],
+            )
+
+            album_tasks.pop(
+                key,
+                None,
+            )
+
+        if not messages:
+            return
+
+        mode = await get_mode(
+            db_path,
+            scope_for_message(
+                messages[0]
+            ),
+        )
+
+        await process_telegram_album(
+            messages,
+            db_path,
+            mode,
+        )
+
+    except asyncio.CancelledError:
+        raise
+
+
+async def collect_album(
+    message: Message,
+    db_path: str,
+):
+    album_id = message.media_group_id
+
+    if not album_id:
+        return
+
+    key = (
+        message.chat.id,
+        album_id,
+    )
+
+    async with album_lock:
+        album_messages.setdefault(
+            key,
+            [],
+        ).append(message)
+
+        task = album_tasks.get(key)
+
+        if task and not task.done():
+            task.cancel()
+
+        album_tasks[key] = (
+            asyncio.create_task(
+                finish_album(key, db_path)
+            )
+        )
+
+
+def setup_audio_handlers(db_path: str) -> Router:
+    @router.message(
+        F.video
+        | F.audio
+        | F.voice
+        | F.document
+    )
+    async def media_handler(
+        message: Message,
+    ):
+        if message.media_group_id:
+            await collect_album(message, db_path)
+            return
+
+        await handle_media_message(
+            message,
+            db_path,
+        )
+
+    @router.channel_post(
+        F.video
+        | F.audio
+        | F.voice
+        | F.document
+    )
+    async def channel_media_handler(
+        message: Message,
+    ):
+        if message.media_group_id:
+            await collect_album(message, db_path)
+            return
+
+        await handle_media_message(
+            message,
+            db_path,
+        )
+
+    return router

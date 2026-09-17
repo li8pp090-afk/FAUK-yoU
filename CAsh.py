@@ -14,6 +14,13 @@ async def init_cache_db(db_path: str):
                 PRIMARY KEY (mode, source_type, content_id)
             )
         """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS settings (
+                scope_key TEXT PRIMARY KEY,
+                mode TEXT NOT NULL DEFAULT 'default',
+                notice_state TEXT NOT NULL DEFAULT 'disabled'
+            )
+        """)
         await db.commit()
 
 
@@ -72,5 +79,77 @@ async def save_file_record(
                 file_id,
                 filename,
             ),
+        )
+        await db.commit()
+
+
+async def ensure_scope(db, scope: str):
+    await db.execute(
+        """
+        INSERT OR IGNORE INTO settings (
+            scope_key,
+            mode,
+            notice_state
+        )
+        VALUES (?, 'default', 'disabled')
+        """,
+        (scope,),
+    )
+
+
+async def get_mode(db_path: str, scope: str) -> str:
+    async with aiosqlite.connect(db_path) as db:
+        await ensure_scope(db, scope)
+        await db.commit()
+
+        cursor = await db.execute(
+            "SELECT mode FROM settings WHERE scope_key = ?",
+            (scope,),
+        )
+        row = await cursor.fetchone()
+
+    return row[0]
+
+
+async def set_mode(db_path: str, scope: str, mode: str):
+    async with aiosqlite.connect(db_path) as db:
+        await ensure_scope(db, scope)
+
+        await db.execute(
+            """
+            UPDATE settings
+            SET mode = ?
+            WHERE scope_key = ?
+            """,
+            (mode, scope),
+        )
+        await db.commit()
+
+
+async def get_notice_state(db_path: str, scope: str) -> str:
+    async with aiosqlite.connect(db_path) as db:
+        await ensure_scope(db, scope)
+        await db.commit()
+
+        cursor = await db.execute(
+            "SELECT notice_state FROM settings WHERE scope_key = ?",
+            (scope,),
+        )
+        row = await cursor.fetchone()
+
+    return row[0]
+
+
+async def set_notice_state(db_path: str, scope: str, state: str):
+    async with aiosqlite.connect(db_path) as db:
+        await ensure_scope(db, scope)
+
+        await db.execute(
+            """
+            UPDATE settings
+            SET notice_state = ?
+            WHERE scope_key = ?
+            """,
+            (state, scope),
         )
         await db.commit()
