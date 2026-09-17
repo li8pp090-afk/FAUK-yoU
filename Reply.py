@@ -17,8 +17,8 @@ MESSAGES = {
 BUTTON_TEXTS = {
     "btn_voice": "فويس",
     "btn_default": "افتراضي",
-    "btn_notice_lock": "قفل الاشعارات",
-    "btn_notice_open": "فتح الاشعارات",
+    "btn_notice_lock": "فتح الاشعارات",
+    "btn_notice_open": "قفل الاشعارات",
     "edit_mode_text": "تستطيع تغيير وضع عمل البوت\nمن هنا",
     "unauthorized": "عزيزي\nليس مصرح لك بذلك",
 }
