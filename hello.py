@@ -7,27 +7,27 @@ from pathlib import Path
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.types import FSInputFile, Message
 
-from AUdio_3 import setup_audio_handlers
-from bUTToN_2 import (
+from AUdio import setup_audio_handlers
+from bUTToN import (
     scope_for_message,
     setup_button_handlers,
 )
-from CAsh_2 import (
+from CAsh import (
     get_file_record,
     get_mode,
     init_cache_db,
     save_file_record,
 )
-from ediT_2 import router as edit_router
-from NoTice_2 import setup_notice_handlers
-from Reply_2 import COMMAND_BOT_TRIGGER, MESSAGES
-from SeTTiNGs_2 import (
+from ediT import router as edit_router
+from NoTice import setup_notice_handlers
+from Reply import COMMAND_BOT_TRIGGER, MESSAGES
+from SeTTiNGs import (
     build_filename,
     is_ignored_url,
     normalize_url,
     sha256_id,
 )
-from yTFMe_2 import (
+from yTFMe import (
     convert_to_ogg_opus,
     download_with_ytdlp,
 )
