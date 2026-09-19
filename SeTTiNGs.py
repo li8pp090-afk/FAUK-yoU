@@ -1,53 +1,126 @@
+import hashlib
 import re
+from urllib.parse import urlparse
 
 
-def clean_name(value):
+UPPER_EXCEPTIONS = set("ATFGUJNML")
+
+
+IGNORED_HOSTS = {
+    "t.me",
+    "telegram.me",
+    "telegram.dog",
+    "www.t.me",
+    "www.telegram.me",
+    "www.telegram.dog",
+    "youtube.com",
+    "www.youtube.com",
+    "m.youtube.com",
+    "youtu.be",
+    "www.youtu.be",
+}
+
+
+def clean_component(value: str) -> str:
+    value = (value or "").strip()
+
     if not value:
-        return "unknown"
-
-    value = str(value).strip()
+        return ""
 
     value = re.sub(
-        r"[^\w\s\u0600-\u06FF]",
+        r"[^\w\s]",
         "",
         value,
-        flags=re.UNICODE
+        flags=re.UNICODE,
     )
 
-    value = re.sub(r"\s+", " ", value).strip()
+    value = re.sub(
+        r"[\r\n\t]+",
+        " ",
+        value,
+    )
 
-    result = []
+    value = re.sub(
+        r"\s+",
+        " ",
+        value,
+    ).strip()
+
+    chars = []
 
     for char in value:
         if char.isascii() and char.isalpha():
-            if char.upper() in "ATFGUJNML":
-                result.append(char.upper())
-            else:
-                result.append(char.lower())
+            chars.append(
+                char.upper()
+                if char.upper() in UPPER_EXCEPTIONS
+                else char.lower()
+            )
         else:
-            result.append(char)
+            chars.append(char)
 
-    value = "".join(result)
-
-    return value or "unknown"
+    return "".join(chars)
 
 
-def build_filename(info, ext):
-    publisher = clean_name(
-        info.get("uploader")
-        or info.get("channel")
+def build_filename(
+    info: dict,
+    actual_path,
+):
+    publisher = clean_component(
+        info.get("channel")
+        or info.get("uploader")
         or info.get("creator")
         or ""
     )
 
-    title = clean_name(
-        info.get("title")
-        or "video"
+    title = clean_component(
+        info.get("title") or ""
     )
 
-    if publisher and publisher != "unknown":
-        name = f"{publisher} - {title}"
+    if publisher and title:
+        stem = f"{publisher} - {title}"
     else:
-        name = title
+        stem = (
+            publisher
+            or title
+            or clean_component(actual_path.stem)
+            or "file"
+        )
 
-    return f"{name}.{ext}"
+    return f"{stem}{actual_path.suffix}"
+
+
+def is_ignored_url(url: str) -> bool:
+    try:
+        host = (
+            urlparse(url).hostname
+            or ""
+        ).lower()
+
+        return (
+            host in IGNORED_HOSTS
+            or host.endswith(".telegram.org")
+            or host.endswith(".youtube.com")
+        )
+
+    except Exception:
+        return False
+
+
+def normalize_url(text: str):
+    match = re.search(
+        r"https?://\S+",
+        text or "",
+    )
+
+    if not match:
+        return None
+
+    return match.group(0).rstrip(
+        ".,!?)]}"
+    )
+
+
+def sha256_id(value: str) -> str:
+    return hashlib.sha256(
+        value.encode("utf-8")
+    ).hexdigest()
