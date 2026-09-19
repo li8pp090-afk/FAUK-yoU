@@ -1,366 +1,185 @@
-import asyncio
 import os
-import shutil
-import tempfile
-from pathlib import Path
+import asyncio
 
-from aiogram import Bot, Dispatcher, F, Router
-from aiogram.types import FSInputFile, Message
+from aiogram import Bot, Dispatcher, F
+from aiogram.client.default import DefaultBotProperties
+from aiogram.enums import ParseMode
+from aiogram.types import Message, FSInputFile
 
-from AUdio import setup_audio_handlers
-from bUTToN import (
-    scope_for_message,
-    setup_button_handlers,
+from Reply import (
+    TAKEOFF_MESSAGE,
+    EDIT_TRIGGER,
+    BOT_TRIGGER,
+    EDIT_MESSAGE,
+    BOT_REPLIES
 )
+
 from CAsh import (
-    get_file_record,
+    init_db,
     get_mode,
-    init_cache_db,
-    save_file_record,
+    save_edit_permission,
+    get_next_reply
 )
-from ediT import router as edit_router
-from NoTice import setup_notice_handlers
-from Reply import COMMAND_BOT_TRIGGER, MESSAGES
-from SeTTiNGs import (
-    build_filename,
-    is_ignored_url,
-    normalize_url,
-    sha256_id,
+
+from bUTToN import (
+    mode_keyboard,
+    register_button_handlers
 )
+
 from yTFMe import (
-    convert_to_ogg_opus,
-    download_with_ytdlp,
+    download_virtual,
+    download_voice
 )
 
-BOT_TOKEN = os.getenv("BOT_TOKEN", "")
-DB_PATH = os.getenv("DB_PATH", "bot.sqlite3")
-BOT_TAKEOFF = os.getenv("boT_TAkeoFF", "")
+TOKEN = os.getenv("BOT_TOKEN")
+boT_TAkeoFF = os.getenv("boT_TAkeoFF")
 
-ACTIVE_DOWNLOADS = 3
-WAITING_DOWNLOADS = 3
-
-reply_state = {}
-reply_state_lock = asyncio.Lock()
-
-download_queue = asyncio.Queue(
-    maxsize=WAITING_DOWNLOADS
+bot = Bot(
+    token=TOKEN,
+    default=DefaultBotProperties(parse_mode=ParseMode.HTML)
 )
 
-router = Router(name="text_router")
+dp = Dispatcher()
+register_button_handlers(dp)
 
-
-async def init_db():
-    await init_cache_db(DB_PATH)
-
-
-async def send_takeoff_message(bot: Bot):
-    if not BOT_TAKEOFF:
+async def send_takeoff_notifications():
+    if not boT_TAkeoFF:
         return
 
-    chat_ids = [
-        x.strip()
-        for x in BOT_TAKEOFF.split("/")
-        if x.strip()
-    ]
+    chat_ids = [cid.strip() for cid in boT_TAkeoFF.split("/") if cid.strip()]
 
     for chat_id in chat_ids:
         try:
             await bot.send_message(
-                chat_id=chat_id,
-                text=MESSAGES["takeoff"],
+                chat_id=int(chat_id),
+                text=TAKEOFF_MESSAGE
             )
         except Exception:
             pass
 
+def get_scope_id(message: Message):
+    if message.chat.type == "private":
+        return f"private:{message.from_user.id}"
 
-async def send_saved_file(
-    message: Message,
-    mode: str,
-    file_id: str,
-):
-    if mode == "voice":
-        await message.reply_voice(
-            voice=file_id
-        )
-    else:
-        await message.reply_document(
-            document=file_id
-        )
+    return f"chat:{message.chat.id}"
 
+def is_link(text):
+    if not text:
+        return False
 
-async def process_url(
-    message: Message,
-    url: str,
-    mode: str,
-):
-    source_type = "url"
-    content_id = sha256_id(url)
+    lowered = text.lower()
 
-    existing = await get_file_record(
-        DB_PATH,
-        mode,
-        source_type,
-        content_id,
+    return (
+        lowered.startswith("http://")
+        or lowered.startswith("https://")
+        or lowered.startswith("www.")
+        or "t.me/" in lowered
     )
 
-    if existing:
-        await send_saved_file(
-            message,
-            mode,
-            existing[0],
-        )
+async def is_authorized(message: Message):
+    if message.chat.type == "private":
+        return True
+
+    member = await bot.get_chat_member(
+        message.chat.id,
+        message.from_user.id
+    )
+
+    return member.status in {
+        "creator",
+        "administrator"
+    }
+
+@dp.message(F.text == EDIT_TRIGGER)
+async def edit_command(message: Message):
+    if not await is_authorized(message):
         return
 
-    status = None
-    workdir = tempfile.mkdtemp(
-        prefix="download_"
+    scope_id = get_scope_id(message)
+    current_mode = await __import__("CAsh").get_mode(scope_id)
+
+    sent_message = await message.reply(
+        EDIT_MESSAGE,
+        reply_markup=mode_keyboard(current_mode)
     )
 
-    try:
-        status = await message.reply(
-            MESSAGES["start_download"]
-        )
+    await save_edit_permission(
+        message.chat.id,
+        sent_message.message_id,
+        message.from_user.id
+    )
 
-        path, info = await asyncio.to_thread(
-            download_with_ytdlp,
-            url,
-            mode,
-            workdir,
-        )
+@dp.message(F.text)
+async def text_handler(message: Message):
+    if message.text == EDIT_TRIGGER:
+        return
+
+    if is_link(message.text):
+        scope_id = get_scope_id(message)
+        mode = await __import__("CAsh").get_mode(scope_id)
 
         if mode == "voice":
-            output = Path(workdir) / "voice.ogg"
-
-            await convert_to_ogg_opus(
-                path,
-                output,
+            file_paths = await asyncio.to_thread(
+                download_voice,
+                message.text
             )
 
-            sent = await message.reply_voice(
-                voice=FSInputFile(output),
-            )
+            for index in range(0, len(file_paths), 10):
+                batch = file_paths[index:index + 10]
 
-            await save_file_record(
-                DB_PATH,
-                mode,
-                source_type,
-                content_id,
-                sent.voice.file_id,
-                "voice.ogg",
-            )
+                for file_path in batch:
+                    await message.reply_voice(
+                        FSInputFile(file_path)
+                    )
         else:
-            filename = build_filename(
-                info,
-                path,
+            file_paths = await asyncio.to_thread(
+                download_virtual,
+                message.text
             )
 
-            sent = await message.reply_document(
-                document=FSInputFile(
-                    path,
-                    filename=filename,
-                ),
-            )
+            for index in range(0, len(file_paths), 10):
+                batch = file_paths[index:index + 10]
 
-            await save_file_record(
-                DB_PATH,
-                mode,
-                source_type,
-                content_id,
-                sent.document.file_id,
-                filename,
-            )
+                for file_path in batch:
+                    await message.reply_document(
+                        FSInputFile(file_path)
+                    )
 
-    except Exception:
-        await message.reply(
-            MESSAGES["fail_download"]
-        )
-
-    finally:
-        if status:
-            try:
-                await status.delete()
-            except Exception:
-                pass
-
-        shutil.rmtree(
-            workdir,
-            ignore_errors=True,
-        )
-
-
-async def submit_job(
-    message: Message,
-    value: str,
-    mode: str,
-):
-    try:
-        download_queue.put_nowait(
-            (
-                message,
-                value,
-                mode,
-            )
-        )
-    except asyncio.QueueFull:
         return
 
+    if message.chat.type == "private":
+        scope_id = get_scope_id(message)
 
-async def rotating_reply(message: Message):
-    user_id = message.from_user.id if message.from_user else "channel"
-
-    key = (
-        f"{message.chat.id}:"
-        f"{user_id}"
-    )
-
-    async with reply_state_lock:
-        index = reply_state.get(key, 0)
-
-        reply_state[key] = (
-            index + 1
-        ) % len(
-            MESSAGES["bot_replies"]
+        index = await get_next_reply(
+            scope_id,
+            message.from_user.id,
+            len(BOT_REPLIES)
         )
+
+        await message.reply(
+            BOT_REPLIES[index]
+        )
+        return
+
+    if message.text != BOT_TRIGGER:
+        return
+
+    scope_id = get_scope_id(message)
+
+    index = await get_next_reply(
+        scope_id,
+        message.from_user.id,
+        len(BOT_REPLIES)
+    )
 
     await message.reply(
-        MESSAGES["bot_replies"][index]
+        BOT_REPLIES[index]
     )
-
-
-async def worker():
-    while True:
-        message, value, mode = (
-            await download_queue.get()
-        )
-
-        try:
-            await process_url(
-                message,
-                value,
-                mode,
-            )
-        finally:
-            download_queue.task_done()
-
-
-@router.message(F.text)
-async def text_handler(
-    message: Message,
-):
-    text = (
-        message.text or ""
-    ).strip()
-
-    if not text:
-        return
-
-    url = normalize_url(text)
-
-    if url and not is_ignored_url(url):
-        mode = await get_mode(
-            DB_PATH,
-            scope_for_message(message),
-        )
-
-        await submit_job(
-            message,
-            url,
-            mode,
-        )
-
-        return
-
-    if (
-        message.chat.type == "private"
-        or text == COMMAND_BOT_TRIGGER
-    ):
-        await rotating_reply(message)
-
-
-@router.channel_post(F.text)
-async def channel_text_handler(
-    message: Message,
-):
-    text = (
-        message.text or ""
-    ).strip()
-
-    if not text:
-        return
-
-    url = normalize_url(text)
-
-    if url and not is_ignored_url(url):
-        mode = await get_mode(
-            DB_PATH,
-            scope_for_message(message),
-        )
-
-        await submit_job(
-            message,
-            url,
-            mode,
-        )
-
-        return
-
-    if text == COMMAND_BOT_TRIGGER:
-        await rotating_reply(message)
-
 
 async def main():
-    if not BOT_TOKEN:
-        raise RuntimeError(
-            "BOT_TOKEN is not set"
-        )
-
     await init_db()
-
-    bot = Bot(BOT_TOKEN)
-    dispatcher = Dispatcher()
-
-    dispatcher.include_router(
-        edit_router
-    )
-
-    dispatcher.include_router(
-        setup_button_handlers(DB_PATH)
-    )
-
-    dispatcher.include_router(
-        setup_notice_handlers(DB_PATH)
-    )
-
-    dispatcher.include_router(
-        setup_audio_handlers(DB_PATH)
-    )
-
-    dispatcher.include_router(
-        router
-    )
-
-    workers = [
-        asyncio.create_task(worker())
-        for _ in range(ACTIVE_DOWNLOADS)
-    ]
-
-    await send_takeoff_message(bot)
-
-    try:
-        await dispatcher.start_polling(
-            bot
-        )
-    finally:
-        for task in workers:
-            task.cancel()
-
-        await asyncio.gather(
-            *workers,
-            return_exceptions=True,
-        )
-
-        await bot.session.close()
-
+    await send_takeoff_notifications()
+    await dp.start_polling(bot)
 
 if __name__ == "__main__":
     asyncio.run(main())

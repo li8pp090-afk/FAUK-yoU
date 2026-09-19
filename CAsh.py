@@ -1,155 +1,133 @@
 import aiosqlite
 
 
-async def init_cache_db(db_path: str):
-    async with aiosqlite.connect(db_path) as db:
+DB_PATH = "bot.db"
+
+
+async def init_db():
+    async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("""
-            CREATE TABLE IF NOT EXISTS file_cache (
-                mode TEXT NOT NULL,
-                source_type TEXT NOT NULL,
-                content_id TEXT NOT NULL,
-                file_id TEXT NOT NULL,
-                filename TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                PRIMARY KEY (mode, source_type, content_id)
+            CREATE TABLE IF NOT EXISTS bot_modes (
+                scope_id TEXT PRIMARY KEY,
+                mode TEXT NOT NULL
             )
         """)
+
         await db.execute("""
-            CREATE TABLE IF NOT EXISTS settings (
-                scope_key TEXT PRIMARY KEY,
-                mode TEXT NOT NULL DEFAULT 'default',
-                notice_state TEXT NOT NULL DEFAULT 'disabled'
+            CREATE TABLE IF NOT EXISTS edit_button_permissions (
+                chat_id INTEGER NOT NULL,
+                message_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                PRIMARY KEY (chat_id, message_id)
             )
         """)
+
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS reply_states (
+                scope_id TEXT NOT NULL,
+                user_id INTEGER NOT NULL,
+                reply_index INTEGER NOT NULL,
+                PRIMARY KEY (scope_id, user_id)
+            )
+        """)
+
         await db.commit()
 
 
-async def get_file_record(
-    db_path: str,
-    mode: str,
-    source_type: str,
-    content_id: str,
-):
-    async with aiosqlite.connect(db_path) as db:
+async def get_mode(scope_id):
+    async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
-            """
-            SELECT file_id, filename
-            FROM file_cache
-            WHERE mode = ?
-              AND source_type = ?
-              AND content_id = ?
-            """,
-            (mode, source_type, content_id),
+            "SELECT mode FROM bot_modes WHERE scope_id = ?",
+            (scope_id,)
         )
-        return await cursor.fetchone()
+        row = await cursor.fetchone()
+
+    if row is None:
+        return "voice"
+
+    return row[0]
 
 
-async def save_file_record(
-    db_path: str,
-    mode: str,
-    source_type: str,
-    content_id: str,
-    file_id: str,
-    filename: str | None = None,
-):
-    async with aiosqlite.connect(db_path) as db:
+async def set_mode(scope_id, mode):
+    async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             """
-            INSERT INTO file_cache (
-                mode,
-                source_type,
-                content_id,
-                file_id,
-                filename
-            )
-            VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT (
-                mode,
-                source_type,
-                content_id
-            )
-            DO UPDATE SET
-                file_id = excluded.file_id,
-                filename = excluded.filename
+            INSERT INTO bot_modes (scope_id, mode)
+            VALUES (?, ?)
+            ON CONFLICT(scope_id)
+            DO UPDATE SET mode = excluded.mode
             """,
-            (
-                mode,
-                source_type,
-                content_id,
-                file_id,
-                filename,
-            ),
+            (scope_id, mode)
         )
         await db.commit()
 
 
-async def ensure_scope(db, scope: str):
-    await db.execute(
-        """
-        INSERT OR IGNORE INTO settings (
-            scope_key,
-            mode,
-            notice_state
+async def save_edit_permission(chat_id, message_id, user_id):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """
+            INSERT OR REPLACE INTO edit_button_permissions
+            (chat_id, message_id, user_id)
+            VALUES (?, ?, ?)
+            """,
+            (chat_id, message_id, user_id)
         )
-        VALUES (?, 'default', 'disabled')
-        """,
-        (scope,),
+        await db.commit()
+
+
+async def get_edit_permission(chat_id, message_id):
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            """
+            SELECT user_id
+            FROM edit_button_permissions
+            WHERE chat_id = ? AND message_id = ?
+            """,
+            (chat_id, message_id)
+        )
+        row = await cursor.fetchone()
+
+    return row[0] if row else None
+
+
+async def is_edit_button_owner(chat_id, message_id, user_id):
+    owner_id = await get_edit_permission(
+        chat_id,
+        message_id
     )
 
+    return owner_id == user_id
 
-async def get_mode(db_path: str, scope: str) -> str:
-    async with aiosqlite.connect(db_path) as db:
-        await ensure_scope(db, scope)
-        await db.commit()
 
+async def get_next_reply(scope_id, user_id, replies_count):
+    async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
-            "SELECT mode FROM settings WHERE scope_key = ?",
-            (scope,),
+            """
+            SELECT reply_index
+            FROM reply_states
+            WHERE scope_id = ? AND user_id = ?
+            """,
+            (scope_id, user_id)
         )
+
         row = await cursor.fetchone()
 
-    return row[0]
-
-
-async def set_mode(db_path: str, scope: str, mode: str):
-    async with aiosqlite.connect(db_path) as db:
-        await ensure_scope(db, scope)
+        if row is None:
+            next_index = 0
+        else:
+            next_index = (row[0] + 1) % replies_count
 
         await db.execute(
             """
-            UPDATE settings
-            SET mode = ?
-            WHERE scope_key = ?
+            INSERT INTO reply_states
+            (scope_id, user_id, reply_index)
+            VALUES (?, ?, ?)
+            ON CONFLICT(scope_id, user_id)
+            DO UPDATE SET reply_index = excluded.reply_index
             """,
-            (mode, scope),
+            (scope_id, user_id, next_index)
         )
+
         await db.commit()
 
-
-async def get_notice_state(db_path: str, scope: str) -> str:
-    async with aiosqlite.connect(db_path) as db:
-        await ensure_scope(db, scope)
-        await db.commit()
-
-        cursor = await db.execute(
-            "SELECT notice_state FROM settings WHERE scope_key = ?",
-            (scope,),
-        )
-        row = await cursor.fetchone()
-
-    return row[0]
-
-
-async def set_notice_state(db_path: str, scope: str, state: str):
-    async with aiosqlite.connect(db_path) as db:
-        await ensure_scope(db, scope)
-
-        await db.execute(
-            """
-            UPDATE settings
-            SET notice_state = ?
-            WHERE scope_key = ?
-            """,
-            (state, scope),
-        )
-        await db.commit()
+    return next_index
