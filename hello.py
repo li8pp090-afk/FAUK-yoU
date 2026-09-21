@@ -1,6 +1,5 @@
 import os
 import asyncio
-import tempfile
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.client.default import DefaultBotProperties
@@ -10,12 +9,6 @@ from aiogram.types import (
     FSInputFile,
     InputMediaDocument,
     ReplyParameters,
-    InlineKeyboardMarkup,
-    InlineKeyboardButton,
-    ReplyKeyboardMarkup,
-    KeyboardButton,
-    KeyboardButtonRequestChat,
-    ChatAdministratorRights,
     ChatMemberUpdated
 )
 
@@ -23,20 +16,15 @@ from Reply import (
     TAKEOFF_MESSAGE,
     EDIT_TRIGGER,
     BOT_TRIGGER,
+    ENABLE_TRIGGER,
+    DISABLE_TRIGGER,
+    ENABLE_REPLY,
+    DISABLE_REPLY,
     EDIT_MESSAGE,
     BOT_REPLIES,
-    UNAUTHORIZED,
     DOWNLOAD_STARTED,
     DOWNLOAD_ERROR,
-    VOICE_EDIT_TRIGGER,
-    VOICE_EDIT_START,
-    VOICE_EDIT_TOO_LONG,
-    VOICE_EDIT_INVALID,
-    VOICE_EDIT_INFO_BUTTON,
-    AUTO_ENABLED_MESSAGE,
-    PROMOTE_SELECT_CHAT,
-    PROMOTE_SUCCESS,
-    PROMOTE_FAILED
+    AUTO_ENABLED_MESSAGE
 )
 
 from CAsh import (
@@ -52,9 +40,6 @@ from CAsh import (
     get_next_queued_download,
     finish_download,
     fail_download,
-    set_voice_edit_session,
-    get_voice_edit_session,
-    delete_voice_edit_session,
     get_auto_enable,
     get_chat_enabled,
     set_chat_enabled
@@ -67,14 +52,17 @@ from bUTToN import (
 
 from yTFMe import (
     get_virtual,
-    get_voice,
-    get_voice_edit_range,
-    get_voice_duration,
-    edit_voice
+    get_voice
 )
 
 from FFMpeG import (
     cleanup_path
+)
+
+from ediT import (
+    handle_voice_edit_command,
+    handle_voice_edit_duration,
+    get_thread_id
 )
 
 
@@ -94,10 +82,6 @@ register_button_handlers(
     dp,
     bot
 )
-
-
-PROMOTE_REQUEST_GROUP = 7001
-PROMOTE_REQUEST_CHANNEL = 7002
 
 
 async def send_takeoff_notifications():
@@ -196,16 +180,6 @@ def get_actor_id(message: Message):
         return message.sender_chat.id
 
     return message.chat.id
-
-
-def get_thread_id(message: Message):
-    if message.chat.type in {
-        "private",
-        "supergroup"
-    }:
-        return message.message_thread_id
-
-    return None
 
 
 def get_job_thread_id(job):
@@ -818,147 +792,6 @@ async def handle_media_request(
         )
 
 
-async def handle_voice_edit_command(
-    message: Message
-):
-    if message.chat.type == "channel":
-        return False
-
-    if not message.from_user:
-        return False
-
-    if message.text != VOICE_EDIT_TRIGGER:
-        return False
-
-    if not message.reply_to_message:
-        return True
-
-    replied_message = (
-        message.reply_to_message
-    )
-
-    if not replied_message.voice:
-        return True
-
-    await set_voice_edit_session(
-        user_id=message.from_user.id,
-        chat_id=message.chat.id,
-        message_id=replied_message.message_id,
-        file_id=replied_message.voice.file_id
-    )
-
-    keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text=VOICE_EDIT_INFO_BUTTON,
-                    callback_data="voice_edit_info",
-                    style="primary"
-                )
-            ]
-        ]
-    )
-
-    await message.reply(
-        VOICE_EDIT_START,
-        reply_markup=keyboard
-    )
-
-    return True
-
-
-async def handle_voice_edit_duration(
-    message: Message
-):
-    if not message.from_user:
-        return False
-
-    session = await get_voice_edit_session(
-        message.from_user.id
-    )
-
-    if session is None:
-        return False
-
-    await delete_voice_edit_session(
-        message.from_user.id
-    )
-
-    try:
-        start, end = get_voice_edit_range(
-            message.text
-        )
-    except Exception:
-        await message.reply(
-            VOICE_EDIT_INVALID
-        )
-        return True
-
-    temp_directory = tempfile.mkdtemp(
-        prefix="voice_edit_"
-    )
-
-    source_file = os.path.join(
-        temp_directory,
-        "source.ogg"
-    )
-
-    output_file = os.path.join(
-        temp_directory,
-        "edited.ogg"
-    )
-
-    try:
-        await bot.download(
-            session["file_id"],
-            destination=source_file
-        )
-
-        duration = await asyncio.to_thread(
-            get_voice_duration,
-            source_file
-        )
-
-        if end > duration:
-            await message.reply(
-                VOICE_EDIT_TOO_LONG
-            )
-            return True
-
-        await asyncio.to_thread(
-            edit_voice,
-            source_file,
-            start,
-            end,
-            output_file
-        )
-
-        await bot.send_voice(
-            chat_id=message.chat.id,
-            voice=FSInputFile(
-                output_file
-            ),
-            message_thread_id=get_thread_id(
-                message
-            ),
-            reply_parameters=ReplyParameters(
-                message_id=message.message_id
-            )
-        )
-
-    except Exception:
-        await message.reply(
-            VOICE_EDIT_INVALID
-        )
-
-    finally:
-        cleanup_path(
-            temp_directory
-        )
-
-    return True
-
-
 def get_enabled_scope_id(
     message: Message
 ):
@@ -974,8 +807,8 @@ async def handle_enable_disable(
         return False
 
     if message.text not in {
-        "تفعيل",
-        "تعطيل"
+        ENABLE_TRIGGER,
+        DISABLE_TRIGGER
     }:
         return False
 
@@ -985,7 +818,7 @@ async def handle_enable_disable(
         return True
 
     enabled = (
-        message.text == "تفعيل"
+        message.text == ENABLE_TRIGGER
     )
 
     scope_id = get_enabled_scope_id(
@@ -997,281 +830,17 @@ async def handle_enable_disable(
         enabled
     )
 
+    reply_text = (
+        ENABLE_REPLY
+        if enabled
+        else DISABLE_REPLY
+    )
+
+    await message.reply(
+        reply_text
+    )
+
     return True
-
-
-def build_promote_keyboard():
-    group_rights = ChatAdministratorRights(
-        is_anonymous=False,
-        can_manage_chat=True,
-        can_delete_messages=False,
-        can_manage_video_chats=False,
-        can_restrict_members=False,
-        can_promote_members=True,
-        can_change_info=False,
-        can_invite_users=False,
-        can_post_stories=False,
-        can_edit_stories=False,
-        can_delete_stories=False,
-        can_send_welcome_messages=False,
-        can_pin_messages=True,
-        can_manage_topics=True,
-        can_manage_tags=False
-    )
-
-    channel_rights = ChatAdministratorRights(
-        is_anonymous=False,
-        can_manage_chat=True,
-        can_delete_messages=False,
-        can_manage_video_chats=False,
-        can_restrict_members=False,
-        can_promote_members=True,
-        can_change_info=False,
-        can_invite_users=False,
-        can_post_stories=False,
-        can_edit_stories=False,
-        can_delete_stories=False,
-        can_send_welcome_messages=False,
-        can_post_messages=True,
-        can_edit_messages=True,
-        can_manage_direct_messages=False
-    )
-
-    user_rights = ChatAdministratorRights(
-        is_anonymous=False,
-        can_manage_chat=True,
-        can_delete_messages=False,
-        can_manage_video_chats=False,
-        can_restrict_members=False,
-        can_promote_members=False,
-        can_change_info=False,
-        can_invite_users=False,
-        can_post_stories=False,
-        can_edit_stories=False,
-        can_delete_stories=False,
-        can_send_welcome_messages=False
-    )
-
-    return ReplyKeyboardMarkup(
-        keyboard=[
-            [
-                KeyboardButton(
-                    text="اختيار كروب",
-                    style="success",
-                    request_chat=KeyboardButtonRequestChat(
-                        request_id=PROMOTE_REQUEST_GROUP,
-                        chat_is_channel=False,
-                        user_administrator_rights=user_rights,
-                        bot_is_member=True,
-                        bot_administrator_rights=group_rights,
-                        request_title=True
-                    )
-                ),
-                KeyboardButton(
-                    text="اختيار قناة",
-                    style="success",
-                    request_chat=KeyboardButtonRequestChat(
-                        request_id=PROMOTE_REQUEST_CHANNEL,
-                        chat_is_channel=True,
-                        user_administrator_rights=user_rights,
-                        bot_is_member=True,
-                        bot_administrator_rights=channel_rights,
-                        request_title=True
-                    )
-                )
-            ]
-        ],
-        resize_keyboard=True,
-        one_time_keyboard=True
-    )
-
-
-async def send_promote_selector(
-    user_id: int
-):
-    await bot.send_message(
-        chat_id=user_id,
-        text=PROMOTE_SELECT_CHAT,
-        reply_markup=build_promote_keyboard()
-    )
-
-
-async def handle_chat_shared(
-    message: Message
-):
-    if not message.chat_shared:
-        return
-
-    request_id = (
-        message.chat_shared.request_id
-    )
-
-    if request_id not in {
-        PROMOTE_REQUEST_GROUP,
-        PROMOTE_REQUEST_CHANNEL
-    }:
-        return
-
-    if not message.from_user:
-        return
-
-    chat_id = message.chat_shared.chat_id
-    user_id = message.from_user.id
-
-    try:
-        target_member = await bot.get_chat_member(
-            chat_id,
-            user_id
-        )
-
-        if target_member.status == "creator":
-            await message.answer(
-                PROMOTE_SUCCESS
-            )
-            return
-
-        if target_member.status != "administrator":
-            await message.answer(
-                PROMOTE_FAILED
-            )
-            return
-
-        bot_info = await bot.get_me()
-
-        bot_member = await bot.get_chat_member(
-            chat_id,
-            bot_info.id
-        )
-
-        if bot_member.status != "administrator":
-            await message.answer(
-                PROMOTE_FAILED
-            )
-            return
-
-        rights = {
-            "is_anonymous": False,
-            "can_manage_chat": getattr(
-                bot_member,
-                "can_manage_chat",
-                False
-            ),
-            "can_delete_messages": getattr(
-                bot_member,
-                "can_delete_messages",
-                False
-            ),
-            "can_manage_video_chats": getattr(
-                bot_member,
-                "can_manage_video_chats",
-                False
-            ),
-            "can_restrict_members": getattr(
-                bot_member,
-                "can_restrict_members",
-                False
-            ),
-            "can_promote_members": getattr(
-                bot_member,
-                "can_promote_members",
-                False
-            ),
-            "can_change_info": getattr(
-                bot_member,
-                "can_change_info",
-                False
-            ),
-            "can_invite_users": getattr(
-                bot_member,
-                "can_invite_users",
-                False
-            ),
-            "can_post_stories": getattr(
-                bot_member,
-                "can_post_stories",
-                False
-            ),
-            "can_edit_stories": getattr(
-                bot_member,
-                "can_edit_stories",
-                False
-            ),
-            "can_delete_stories": getattr(
-                bot_member,
-                "can_delete_stories",
-                False
-            ),
-            "can_send_welcome_messages": getattr(
-                bot_member,
-                "can_send_welcome_messages",
-                False
-            )
-        }
-
-        if message.chat_shared.request_id == PROMOTE_REQUEST_CHANNEL:
-            rights.update(
-                {
-                    "can_post_messages": getattr(
-                        bot_member,
-                        "can_post_messages",
-                        False
-                    ),
-                    "can_edit_messages": getattr(
-                        bot_member,
-                        "can_edit_messages",
-                        False
-                    ),
-                    "can_manage_direct_messages": getattr(
-                        bot_member,
-                        "can_manage_direct_messages",
-                        False
-                    )
-                }
-            )
-        else:
-            rights.update(
-                {
-                    "can_pin_messages": getattr(
-                        bot_member,
-                        "can_pin_messages",
-                        False
-                    ),
-                    "can_manage_topics": getattr(
-                        bot_member,
-                        "can_manage_topics",
-                        False
-                    ),
-                    "can_manage_tags": getattr(
-                        bot_member,
-                        "can_manage_tags",
-                        False
-                    )
-                }
-            )
-
-        await bot.promote_chat_member(
-            chat_id=chat_id,
-            user_id=user_id,
-            **rights
-        )
-
-        await message.answer(
-            PROMOTE_SUCCESS
-        )
-
-    except Exception:
-        await message.answer(
-            PROMOTE_FAILED
-        )
-
-
-@dp.message(F.chat_shared)
-async def chat_shared_handler(
-    message: Message
-):
-    await handle_chat_shared(
-        message
-    )
 
 
 @dp.my_chat_member()
@@ -1329,15 +898,6 @@ async def handle_text_message(
     if not message.text:
         return
 
-    if message.chat.type == "private":
-        if message.text.startswith(
-            "/start promote_admin"
-        ):
-            await send_promote_selector(
-                message.from_user.id
-            )
-            return
-
     if await handle_enable_disable(
         message
     ):
@@ -1359,7 +919,8 @@ async def handle_text_message(
         return
 
     if await handle_voice_edit_duration(
-        message
+        message,
+        bot
     ):
         return
 

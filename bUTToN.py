@@ -13,7 +13,6 @@ from Reply import (
     VOICE_BUTTON,
     VIRTUAL_BUTTON,
     AUTO_ENABLE_BUTTON,
-    PROMOTE_BUTTON,
     VOICE_EDIT_INFO,
     VOICE_EDIT_INFO_BUTTON
 )
@@ -58,11 +57,6 @@ def mode_keyboard(
                     text=VIRTUAL_BUTTON,
                     callback_data="mode:virtual",
                     style=virtual_style
-                ),
-                InlineKeyboardButton(
-                    text=PROMOTE_BUTTON,
-                    callback_data="promote:admin",
-                    style="success"
                 ),
                 InlineKeyboardButton(
                     text=VOICE_BUTTON,
@@ -276,26 +270,6 @@ def get_scope_id_from_callback(
     )
 
 
-async def promote_callback(
-    callback: CallbackQuery,
-    bot: Bot
-):
-    if callback.from_user is None:
-        await callback.answer()
-        return
-
-    me = await bot.get_me()
-
-    url = (
-        f"https://t.me/{me.username}"
-        f"?start=promote_admin"
-    )
-
-    await callback.answer(
-        url=url
-    )
-
-
 async def voice_edit_info_callback(
     callback: CallbackQuery
 ):
@@ -320,14 +294,6 @@ def register_button_handlers(
     dp.callback_query.register(
         auto_enable_callback,
         F.data == "auto:toggle"
-    )
-
-    dp.callback_query.register(
-        partial(
-            promote_callback,
-            bot=bot
-        ),
-        F.data == "promote:admin"
     )
 
     dp.callback_query.register(

@@ -3,6 +3,19 @@ TAKEOFF_MESSAGE = "اشتغل البوت مرتلخ مولاي\nمواح"
 EDIT_TRIGGER = "ادت"
 BOT_TRIGGER = "بوت"
 
+ENABLE_TRIGGER = "تفعيل"
+DISABLE_TRIGGER = "تعطيل"
+
+ENABLE_REPLY = (
+    "تم تفعيل البوت تستطيع ان تعطلني\n"
+    "فيما بعد"
+)
+
+DISABLE_REPLY = (
+    "تم تعطيل البوت تستطيع ان تفعلني\n"
+    "فيما بعد"
+)
+
 EDIT_MESSAGE = "تستطيع تغيير وضع عمل البوت\nمن هنا"
 
 UNAUTHORIZED = "عزيزي\nليس مصرح لك بذلك"
@@ -11,13 +24,13 @@ VOICE_BUTTON = "فويس"
 VIRTUAL_BUTTON = "افتراضي"
 
 AUTO_ENABLE_BUTTON = "تفعيل تلقائيا"
-PROMOTE_BUTTON = "رفع مشرف"
 
 DOWNLOAD_STARTED = "ههع راح اموطلك وامص عيرك دادي\nيدلل نياشي"
 
 DOWNLOAD_ERROR = "الرابط غير المدعوم او الموقع مو راضي يتعاون\nشم طيزي يلا"
 
 VOICE_EDIT_TRIGGER = "تعديل"
+AUDIO_EXTRACT_TRIGGER = "بدء"
 
 VOICE_EDIT_INFO_BUTTON = "اطلاع"
 
@@ -57,16 +70,15 @@ VOICE_EDIT_INVALID = (
     "الصيغه غير مدعومه"
 )
 
+NO_AUDIO_TRACK_ERROR = (
+    "لا يمتلك هذا الفيديو او هذا الملف\n"
+    "مسارا صوتيا"
+)
+
 AUTO_ENABLED_MESSAGE = (
     "تم تفعيل البوت تلقائيا\n"
     "بهذا الشات"
 )
-
-PROMOTE_SELECT_CHAT = "اختار الكروب او القناة الي انت مسؤول بيها"
-
-PROMOTE_SUCCESS = "تم رفعك مشرف بهذا الشات"
-
-PROMOTE_FAILED = "ماكدرت ارفعك مشرف بهذا الشات"
 
 BOT_REPLIES = [
     "اهلين وسهلين\nاستاذ/ة",
