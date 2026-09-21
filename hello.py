@@ -8,23 +8,16 @@ from aiogram.types import (
     Message,
     FSInputFile,
     InputMediaDocument,
-    ReplyParameters,
-    ChatMemberUpdated
+    ReplyParameters
 )
 
 from Reply import (
     TAKEOFF_MESSAGE,
     EDIT_TRIGGER,
-    BOT_TRIGGER,
-    ENABLE_TRIGGER,
-    DISABLE_TRIGGER,
-    ENABLE_REPLY,
-    DISABLE_REPLY,
     EDIT_MESSAGE,
     BOT_REPLIES,
     DOWNLOAD_STARTED,
-    DOWNLOAD_ERROR,
-    AUTO_ENABLED_MESSAGE
+    DOWNLOAD_ERROR
 )
 
 from CAsh import (
@@ -39,10 +32,7 @@ from CAsh import (
     add_download,
     get_next_queued_download,
     finish_download,
-    fail_download,
-    get_auto_enable,
-    get_chat_enabled,
-    set_chat_enabled
+    fail_download
 )
 
 from bUTToN import (
@@ -51,12 +41,9 @@ from bUTToN import (
 )
 
 from yTFMe import (
+    cleanup_path,
     get_virtual,
     get_voice
-)
-
-from FFMpeG import (
-    cleanup_path
 )
 
 from ediT import (
@@ -84,114 +71,32 @@ register_button_handlers(
 )
 
 
-async def send_takeoff_notifications():
-    if not boT_TAkeoFF:
-        return
-
-    chat_ids = [
-        cid.strip()
-        for cid in boT_TAkeoFF.split("/")
-        if cid.strip()
-    ]
-
-    for chat_id in chat_ids:
-        try:
-            await bot.send_message(
-                chat_id=int(chat_id),
-                text=TAKEOFF_MESSAGE
-            )
-        except Exception:
-            pass
+def is_private_message(message: Message):
+    return message.chat.type == "private"
 
 
 def get_scope_id(message: Message):
-    if message.chat.type == "private":
-        thread_id = message.message_thread_id
+    if not is_private_message(message):
+        return None
 
-        if thread_id:
-            return (
-                f"private:{message.chat.id}"
-                f":topic:{thread_id}"
-            )
+    thread_id = message.message_thread_id
 
+    if thread_id:
         return (
             f"private:{message.chat.id}"
+            f":topic:{thread_id}"
         )
 
-    if message.chat.type in {
-        "group",
-        "supergroup"
-    }:
-        thread_id = message.message_thread_id
-
-        if thread_id:
-            return (
-                f"chat:{message.chat.id}"
-                f":topic:{thread_id}"
-            )
-
-        return (
-            f"chat:{message.chat.id}"
-        )
-
-    if message.chat.type == "channel":
-        return (
-            f"channel:{message.chat.id}"
-        )
-
-    return (
-        f"chat:{message.chat.id}"
-    )
-
-
-def get_scope_id_from_chat(
-    chat,
-    message_thread_id=None
-):
-    if chat.type in {
-        "group",
-        "supergroup"
-    }:
-        if message_thread_id:
-            return (
-                f"chat:{chat.id}"
-                f":topic:{message_thread_id}"
-            )
-
-        return (
-            f"chat:{chat.id}"
-        )
-
-    if chat.type == "channel":
-        return (
-            f"channel:{chat.id}"
-        )
-
-    return (
-        f"chat:{chat.id}"
-    )
-
-
-def get_actor_id(message: Message):
-    if message.from_user:
-        return message.from_user.id
-
-    if message.sender_chat:
-        return message.sender_chat.id
-
-    return message.chat.id
+    return f"private:{message.chat.id}"
 
 
 def get_job_thread_id(job):
     scope_id = job["scope_id"]
 
-    if (
-        scope_id.startswith("chat:")
-        or scope_id.startswith("private:")
-    ):
-        return job["message_thread_id"]
+    if not scope_id.startswith("private:"):
+        return None
 
-    return None
+    return job["message_thread_id"]
 
 
 def get_reply_parameters(job):
@@ -214,31 +119,40 @@ def is_link(text):
     )
 
 
-async def is_authorized(message: Message):
-    if message.chat.type == "private":
-        return True
+def get_actor_id(message: Message):
+    if message.from_user:
+        return message.from_user.id
 
-    if message.chat.type == "channel":
-        return True
+    return message.chat.id
 
-    if not message.from_user:
-        return False
 
-    member = await bot.get_chat_member(
-        message.chat.id,
-        message.from_user.id
-    )
+async def send_takeoff_notifications():
+    if not boT_TAkeoFF:
+        return
 
-    return member.status in {
-        "creator",
-        "administrator"
-    }
+    chat_ids = [
+        cid.strip()
+        for cid in boT_TAkeoFF.split("/")
+        if cid.strip()
+    ]
+
+    for chat_id in chat_ids:
+        try:
+            await bot.send_message(
+                chat_id=int(chat_id),
+                text=TAKEOFF_MESSAGE
+            )
+        except Exception:
+            pass
 
 
 async def send_cached_item(
     message: Message,
     item
 ):
+    if not is_private_message(message):
+        return
+
     reply_parameters = ReplyParameters(
         message_id=message.message_id
     )
@@ -270,50 +184,37 @@ async def send_cached_virtual(
     message: Message,
     items
 ):
+    if not is_private_message(message):
+        return
+
     groups = []
     current_group = []
     current_media_group_id = None
 
     for item in items:
-        media_group_id = item[
-            "media_group_id"
-        ]
+        media_group_id = item["media_group_id"]
 
         if media_group_id is None:
             if current_group:
-                groups.append(
-                    current_group
-                )
+                groups.append(current_group)
                 current_group = []
                 current_media_group_id = None
 
-            groups.append(
-                [item]
-            )
+            groups.append([item])
             continue
 
         if (
             current_group
-            and media_group_id
-            != current_media_group_id
+            and media_group_id != current_media_group_id
         ):
-            groups.append(
-                current_group
-            )
+            groups.append(current_group)
             current_group = []
 
-        current_media_group_id = (
-            media_group_id
-        )
-
-        current_group.append(
-            item
-        )
+        current_media_group_id = media_group_id
+        current_group.append(item)
 
     if current_group:
-        groups.append(
-            current_group
-        )
+        groups.append(current_group)
 
     for group in groups:
         if len(group) == 1:
@@ -323,14 +224,8 @@ async def send_cached_virtual(
             )
             continue
 
-        for index in range(
-            0,
-            len(group),
-            10
-        ):
-            batch = group[
-                index:index + 10
-            ]
+        for index in range(0, len(group), 10):
+            batch = group[index:index + 10]
 
             if len(batch) == 1:
                 await send_cached_item(
@@ -362,6 +257,9 @@ async def send_cached_voice(
     message: Message,
     items
 ):
+    if not is_private_message(message):
+        return
+
     for item in items:
         await bot.send_voice(
             chat_id=message.chat.id,
@@ -380,6 +278,9 @@ async def send_cached_items(
     mode,
     items
 ):
+    if not is_private_message(message):
+        return
+
     if mode == "virtual":
         await send_cached_virtual(
             message,
@@ -397,21 +298,16 @@ async def send_virtual_files(
     message: Message,
     file_paths
 ):
-    for index in range(
-        0,
-        len(file_paths),
-        10
-    ):
-        batch = file_paths[
-            index:index + 10
-        ]
+    if not is_private_message(message):
+        return
+
+    for index in range(0, len(file_paths), 10):
+        batch = file_paths[index:index + 10]
 
         if len(batch) == 1:
             await bot.send_document(
                 chat_id=message.chat.id,
-                document=FSInputFile(
-                    batch[0]
-                ),
+                document=FSInputFile(batch[0]),
                 message_thread_id=get_thread_id(
                     message
                 ),
@@ -423,9 +319,7 @@ async def send_virtual_files(
 
         media = [
             InputMediaDocument(
-                media=FSInputFile(
-                    file_path
-                )
+                media=FSInputFile(file_path)
             )
             for file_path in batch
         ]
@@ -446,12 +340,13 @@ async def send_voice_files(
     message: Message,
     file_paths
 ):
+    if not is_private_message(message):
+        return
+
     for file_path in file_paths:
         await bot.send_voice(
             chat_id=message.chat.id,
-            voice=FSInputFile(
-                file_path
-            ),
+            voice=FSInputFile(file_path),
             message_thread_id=get_thread_id(
                 message
             ),
@@ -466,6 +361,9 @@ async def send_download_result(
     mode,
     file_paths
 ):
+    if not is_private_message(message):
+        return
+
     if mode == "virtual":
         await send_virtual_files(
             message,
@@ -483,17 +381,14 @@ async def send_job_message(
     job,
     text
 ):
-    thread_id = get_job_thread_id(
-        job
-    )
+    if not job["scope_id"].startswith("private:"):
+        return
 
     await bot.send_message(
         chat_id=job["chat_id"],
         text=text,
-        message_thread_id=thread_id,
-        reply_parameters=get_reply_parameters(
-            job
-        )
+        message_thread_id=get_job_thread_id(job),
+        reply_parameters=get_reply_parameters(job)
     )
 
 
@@ -501,10 +396,16 @@ async def create_cache_from_result(
     job,
     sent_messages
 ):
+    scope_id = job["scope_id"]
+
+    if not scope_id.startswith("private:"):
+        return
+
     cache_id = await create_file_cache(
         job["source_url"],
         job["mode"],
-        asyncio.get_running_loop().time()
+        asyncio.get_running_loop().time(),
+        scope_id
     )
 
     if cache_id is None:
@@ -512,27 +413,19 @@ async def create_cache_from_result(
 
     items = []
 
-    for index, sent_message in enumerate(
-        sent_messages
-    ):
+    for index, sent_message in enumerate(sent_messages):
         file_type = None
         file_id = None
-        media_group_id = (
-            sent_message.media_group_id
-        )
+        media_group_id = sent_message.media_group_id
 
         if job["mode"] == "virtual":
             if sent_message.document:
                 file_type = "document"
-                file_id = (
-                    sent_message.document.file_id
-                )
+                file_id = sent_message.document.file_id
         else:
             if sent_message.voice:
                 file_type = "voice"
-                file_id = (
-                    sent_message.voice.file_id
-                )
+                file_id = sent_message.voice.file_id
 
         if file_type and file_id:
             items.append(
@@ -554,63 +447,42 @@ async def send_virtual_files_and_cache(
     job,
     file_paths
 ):
+    if not job["scope_id"].startswith("private:"):
+        return []
+
     sent_messages = []
+    thread_id = get_job_thread_id(job)
 
-    thread_id = get_job_thread_id(
-        job
-    )
-
-    for index in range(
-        0,
-        len(file_paths),
-        10
-    ):
-        batch = file_paths[
-            index:index + 10
-        ]
-
-        reply_parameters = (
-            get_reply_parameters(job)
-        )
+    for index in range(0, len(file_paths), 10):
+        batch = file_paths[index:index + 10]
+        reply_parameters = get_reply_parameters(job)
 
         if len(batch) == 1:
-            sent_message = (
-                await bot.send_document(
-                    chat_id=job["chat_id"],
-                    document=FSInputFile(
-                        batch[0]
-                    ),
-                    message_thread_id=thread_id,
-                    reply_parameters=reply_parameters
-                )
+            sent_message = await bot.send_document(
+                chat_id=job["chat_id"],
+                document=FSInputFile(batch[0]),
+                message_thread_id=thread_id,
+                reply_parameters=reply_parameters
             )
 
-            sent_messages.append(
-                sent_message
-            )
+            sent_messages.append(sent_message)
             continue
 
         media = [
             InputMediaDocument(
-                media=FSInputFile(
-                    file_path
-                )
+                media=FSInputFile(file_path)
             )
             for file_path in batch
         ]
 
-        sent_group = (
-            await bot.send_media_group(
-                chat_id=job["chat_id"],
-                media=media,
-                message_thread_id=thread_id,
-                reply_parameters=reply_parameters
-            )
+        sent_group = await bot.send_media_group(
+            chat_id=job["chat_id"],
+            media=media,
+            message_thread_id=thread_id,
+            reply_parameters=reply_parameters
         )
 
-        sent_messages.extend(
-            sent_group
-        )
+        sent_messages.extend(sent_group)
 
     return sent_messages
 
@@ -619,34 +491,30 @@ async def send_voice_files_and_cache(
     job,
     file_paths
 ):
-    sent_messages = []
+    if not job["scope_id"].startswith("private:"):
+        return []
 
-    thread_id = get_job_thread_id(
-        job
-    )
+    sent_messages = []
+    thread_id = get_job_thread_id(job)
 
     for file_path in file_paths:
-        sent_message = (
-            await bot.send_voice(
-                chat_id=job["chat_id"],
-                voice=FSInputFile(
-                    file_path
-                ),
-                message_thread_id=thread_id,
-                reply_parameters=get_reply_parameters(
-                    job
-                )
-            )
+        sent_message = await bot.send_voice(
+            chat_id=job["chat_id"],
+            voice=FSInputFile(file_path),
+            message_thread_id=thread_id,
+            reply_parameters=get_reply_parameters(job)
         )
 
-        sent_messages.append(
-            sent_message
-        )
+        sent_messages.append(sent_message)
 
     return sent_messages
 
 
 async def process_download(job):
+    if not job["scope_id"].startswith("private:"):
+        await fail_download(job["id"])
+        return
+
     job_directory = None
 
     try:
@@ -656,33 +524,25 @@ async def process_download(job):
         )
 
         if job["mode"] == "voice":
-            job_directory, file_paths = (
-                await asyncio.to_thread(
-                    get_voice,
-                    job["source_url"]
-                )
+            job_directory, file_paths = await asyncio.to_thread(
+                get_voice,
+                job["source_url"]
             )
         else:
-            job_directory, file_paths = (
-                await asyncio.to_thread(
-                    get_virtual,
-                    job["source_url"]
-                )
+            job_directory, file_paths = await asyncio.to_thread(
+                get_virtual,
+                job["source_url"]
             )
 
         if job["mode"] == "virtual":
-            sent_messages = (
-                await send_virtual_files_and_cache(
-                    job,
-                    file_paths
-                )
+            sent_messages = await send_virtual_files_and_cache(
+                job,
+                file_paths
             )
         else:
-            sent_messages = (
-                await send_voice_files_and_cache(
-                    job,
-                    file_paths
-                )
+            sent_messages = await send_voice_files_and_cache(
+                job,
+                file_paths
             )
 
         await create_cache_from_result(
@@ -702,7 +562,8 @@ async def process_download(job):
         try:
             await delete_file_cache(
                 job["source_url"],
-                job["mode"]
+                job["mode"],
+                job["scope_id"]
             )
         except Exception:
             pass
@@ -716,9 +577,7 @@ async def process_download(job):
             pass
 
     finally:
-        cleanup_path(
-            job_directory
-        )
+        cleanup_path(job_directory)
 
         await start_next_download(
             job["scope_id"]
@@ -728,6 +587,12 @@ async def process_download(job):
 async def start_next_download(
     scope_id
 ):
+    if not isinstance(scope_id, str):
+        return
+
+    if not scope_id.startswith("private:"):
+        return
+
     while True:
         job = await get_next_queued_download(
             scope_id
@@ -737,9 +602,7 @@ async def start_next_download(
             return
 
         asyncio.create_task(
-            process_download(
-                job
-            )
+            process_download(job)
         )
 
 
@@ -748,9 +611,18 @@ async def handle_media_request(
     url,
     mode
 ):
+    if not is_private_message(message):
+        return
+
+    scope_id = get_scope_id(message)
+
+    if scope_id is None:
+        return
+
     cache = await get_file_cache(
         url,
-        mode
+        mode,
+        scope_id
     )
 
     if cache is not None:
@@ -764,12 +636,9 @@ async def handle_media_request(
         except Exception:
             await delete_file_cache(
                 url,
-                mode
+                mode,
+                scope_id
             )
-
-    scope_id = get_scope_id(
-        message
-    )
 
     job = await add_download(
         scope_id=scope_id,
@@ -786,132 +655,18 @@ async def handle_media_request(
 
     if job["status"] == "active":
         asyncio.create_task(
-            process_download(
-                job
-            )
+            process_download(job)
         )
-
-
-def get_enabled_scope_id(
-    message: Message
-):
-    return get_scope_id(
-        message
-    )
-
-
-async def handle_enable_disable(
-    message: Message
-):
-    if message.chat.type == "private":
-        return False
-
-    if message.text not in {
-        ENABLE_TRIGGER,
-        DISABLE_TRIGGER
-    }:
-        return False
-
-    if not await is_authorized(
-        message
-    ):
-        return True
-
-    enabled = (
-        message.text == ENABLE_TRIGGER
-    )
-
-    scope_id = get_enabled_scope_id(
-        message
-    )
-
-    await set_chat_enabled(
-        scope_id,
-        enabled
-    )
-
-    reply_text = (
-        ENABLE_REPLY
-        if enabled
-        else DISABLE_REPLY
-    )
-
-    await message.reply(
-        reply_text
-    )
-
-    return True
-
-
-@dp.my_chat_member()
-async def my_chat_member_handler(
-    event: ChatMemberUpdated
-):
-    if event.chat.type == "private":
-        return
-
-    old_status = event.old_chat_member.status
-    new_status = event.new_chat_member.status
-
-    active_statuses = {
-        "member",
-        "administrator",
-        "creator"
-    }
-
-    if old_status in active_statuses:
-        return
-
-    if new_status not in active_statuses:
-        return
-
-    user_id = event.from_user.id
-
-    auto_enabled = await get_auto_enable(
-        user_id
-    )
-
-    scope_id = get_scope_id_from_chat(
-        event.chat
-    )
-
-    await set_chat_enabled(
-        scope_id,
-        auto_enabled
-    )
-
-    if not auto_enabled:
-        return
-
-    try:
-        await bot.send_message(
-            chat_id=event.chat.id,
-            text=AUTO_ENABLED_MESSAGE
-        )
-    except Exception:
-        pass
 
 
 async def handle_text_message(
     message: Message
 ):
+    if not is_private_message(message):
+        return
+
     if not message.text:
         return
-
-    if await handle_enable_disable(
-        message
-    ):
-        return
-
-    if message.chat.type != "private":
-        scope_id = get_scope_id(
-            message
-        )
-
-        if not await get_chat_enabled(
-            scope_id
-        ):
-            return
 
     if await handle_voice_edit_command(
         message
@@ -925,31 +680,19 @@ async def handle_text_message(
         return
 
     if message.text == EDIT_TRIGGER:
-        if not await is_authorized(
-            message
-        ):
-            return
+        scope_id = get_scope_id(message)
 
-        scope_id = get_scope_id(
-            message
-        )
+        if scope_id is None:
+            return
 
         current_mode = await get_mode(
             scope_id
         )
 
-        auto_enabled = True
-
-        if message.from_user:
-            auto_enabled = await get_auto_enable(
-                message.from_user.id
-            )
-
         sent_message = await message.reply(
             EDIT_MESSAGE,
             reply_markup=mode_keyboard(
-                current_mode,
-                auto_enabled
+                current_mode
             )
         )
 
@@ -963,9 +706,10 @@ async def handle_text_message(
         return
 
     if is_link(message.text):
-        scope_id = get_scope_id(
-            message
-        )
+        scope_id = get_scope_id(message)
+
+        if scope_id is None:
+            return
 
         mode = await get_mode(
             scope_id
@@ -977,27 +721,6 @@ async def handle_text_message(
             mode
         )
 
-        return
-
-    if message.chat.type == "private":
-        if not message.from_user:
-            return
-
-        index = await get_next_reply(
-            message.from_user.id,
-            len(BOT_REPLIES)
-        )
-
-        await message.reply(
-            BOT_REPLIES[index]
-        )
-
-        return
-
-    if message.chat.type == "channel":
-        return
-
-    if message.text != BOT_TRIGGER:
         return
 
     if not message.from_user:
@@ -1022,18 +745,10 @@ async def text_handler(
     )
 
 
-@dp.channel_post(F.text)
-async def channel_post_handler(
-    message: Message
-):
-    await handle_text_message(
-        message
-    )
-
-
 async def main():
     await init_db()
     await send_takeoff_notifications()
+
     await dp.start_polling(
         bot
     )

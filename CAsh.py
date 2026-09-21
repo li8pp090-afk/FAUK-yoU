@@ -1,3 +1,5 @@
+import time
+
 import aiosqlite
 
 
@@ -8,8 +10,7 @@ DEFAULT_MODE = "voice"
 MAX_ACTIVE_DOWNLOADS = 3
 MAX_QUEUED_DOWNLOADS = 3
 
-DEFAULT_AUTO_ENABLE = True
-DEFAULT_CHAT_ENABLED = True
+PRIVATE_SCOPE_PREFIX = "private:"
 
 VALID_MODES = {
     "voice",
@@ -23,6 +24,20 @@ VALID_FILE_TYPES = {
     "photo",
     "video_note"
 }
+
+
+def is_private_scope(scope_id):
+    return (
+        isinstance(scope_id, str)
+        and scope_id.startswith(PRIVATE_SCOPE_PREFIX)
+    )
+
+
+def normalize_private_scope(scope_id):
+    if not is_private_scope(scope_id):
+        return None
+
+    return scope_id
 
 
 async def init_db():
@@ -70,6 +85,7 @@ async def init_db():
                 cache_key TEXT NOT NULL UNIQUE,
                 source_url TEXT NOT NULL,
                 mode TEXT NOT NULL,
+                scope_id TEXT,
                 created_at REAL NOT NULL
             )
             """
@@ -123,33 +139,13 @@ async def init_db():
             """
         )
 
-        await db.execute(
-            """
-            CREATE TABLE IF NOT EXISTS user_settings (
-                user_id INTEGER PRIMARY KEY,
-                auto_enable INTEGER NOT NULL
-            )
-            """
-        )
-
-        await db.execute(
-            """
-            CREATE TABLE IF NOT EXISTS chat_settings (
-                scope_id TEXT PRIMARY KEY,
-                enabled INTEGER NOT NULL
-            )
-            """
-        )
-
         columns = []
 
         async with db.execute(
             "PRAGMA table_info(download_queue)"
         ) as cursor:
             async for row in cursor:
-                columns.append(
-                    row[1]
-                )
+                columns.append(row[1])
 
         if "chat_id" not in columns:
             await db.execute(
@@ -175,6 +171,22 @@ async def init_db():
                 """
             )
 
+        cache_columns = []
+
+        async with db.execute(
+            "PRAGMA table_info(file_cache)"
+        ) as cursor:
+            async for row in cursor:
+                cache_columns.append(row[1])
+
+        if "scope_id" not in cache_columns:
+            await db.execute(
+                """
+                ALTER TABLE file_cache
+                ADD COLUMN scope_id TEXT
+                """
+            )
+
         await db.execute(
             """
             CREATE INDEX IF NOT EXISTS idx_queue_scope_status
@@ -196,6 +208,15 @@ async def init_db():
 
         await db.execute(
             """
+            CREATE INDEX IF NOT EXISTS idx_cache_scope
+            ON file_cache (
+                scope_id
+            )
+            """
+        )
+
+        await db.execute(
+            """
             CREATE INDEX IF NOT EXISTS idx_cache_items_cache
             ON file_cache_items (
                 cache_id,
@@ -208,6 +229,11 @@ async def init_db():
 
 
 async def get_mode(scope_id):
+    scope_id = normalize_private_scope(scope_id)
+
+    if scope_id is None:
+        return DEFAULT_MODE
+
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
             """
@@ -215,9 +241,7 @@ async def get_mode(scope_id):
             FROM bot_modes
             WHERE scope_id = ?
             """,
-            (
-                scope_id,
-            )
+            (scope_id,)
         )
 
         row = await cursor.fetchone()
@@ -235,6 +259,11 @@ async def set_mode(
     scope_id,
     mode
 ):
+    scope_id = normalize_private_scope(scope_id)
+
+    if scope_id is None:
+        return
+
     if mode not in VALID_MODES:
         return
 
@@ -263,6 +292,9 @@ async def save_edit_permission(
     message_id,
     user_id
 ):
+    if not isinstance(chat_id, int):
+        return
+
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             """
@@ -288,6 +320,9 @@ async def is_edit_button_owner(
     message_id,
     user_id
 ):
+    if not isinstance(chat_id, int):
+        return False
+
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
             """
@@ -309,100 +344,6 @@ async def is_edit_button_owner(
         return row is not None
 
 
-async def get_auto_enable(
-    user_id
-):
-    async with aiosqlite.connect(DB_PATH) as db:
-        cursor = await db.execute(
-            """
-            SELECT auto_enable
-            FROM user_settings
-            WHERE user_id = ?
-            """,
-            (
-                user_id,
-            )
-        )
-
-        row = await cursor.fetchone()
-
-        if row is None:
-            return DEFAULT_AUTO_ENABLE
-
-        return bool(row[0])
-
-
-async def set_auto_enable(
-    user_id,
-    enabled
-):
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
-            """
-            INSERT INTO user_settings (
-                user_id,
-                auto_enable
-            )
-            VALUES (?, ?)
-            ON CONFLICT(user_id)
-            DO UPDATE SET auto_enable = excluded.auto_enable
-            """,
-            (
-                user_id,
-                1 if enabled else 0
-            )
-        )
-
-        await db.commit()
-
-
-async def get_chat_enabled(
-    scope_id
-):
-    async with aiosqlite.connect(DB_PATH) as db:
-        cursor = await db.execute(
-            """
-            SELECT enabled
-            FROM chat_settings
-            WHERE scope_id = ?
-            """,
-            (
-                scope_id,
-            )
-        )
-
-        row = await cursor.fetchone()
-
-        if row is None:
-            return DEFAULT_CHAT_ENABLED
-
-        return bool(row[0])
-
-
-async def set_chat_enabled(
-    scope_id,
-    enabled
-):
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
-            """
-            INSERT INTO chat_settings (
-                scope_id,
-                enabled
-            )
-            VALUES (?, ?)
-            ON CONFLICT(scope_id)
-            DO UPDATE SET enabled = excluded.enabled
-            """,
-            (
-                scope_id,
-                1 if enabled else 0
-            )
-        )
-
-        await db.commit()
-
-
 async def get_next_reply(
     user_id,
     replies_count
@@ -417,9 +358,7 @@ async def get_next_reply(
             FROM reply_states
             WHERE user_id = ?
             """,
-            (
-                user_id,
-            )
+            (user_id,)
         )
 
         row = await cursor.fetchone()
@@ -454,19 +393,35 @@ async def get_next_reply(
 
 def build_cache_key(
     source_url,
-    mode
+    mode,
+    scope_id
 ):
-    return f"{mode}:{source_url}"
+    scope_id = normalize_private_scope(scope_id)
+
+    if scope_id is None:
+        return None
+
+    return f"{scope_id}:{mode}:{source_url}"
 
 
 async def get_file_cache(
     source_url,
-    mode
+    mode,
+    scope_id
 ):
+    scope_id = normalize_private_scope(scope_id)
+
+    if scope_id is None:
+        return None
+
     cache_key = build_cache_key(
         source_url,
-        mode
+        mode,
+        scope_id
     )
+
+    if cache_key is None:
+        return None
 
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
@@ -476,12 +431,15 @@ async def get_file_cache(
                 cache_key,
                 source_url,
                 mode,
+                scope_id,
                 created_at
             FROM file_cache
             WHERE cache_key = ?
+            AND scope_id = ?
             """,
             (
                 cache_key,
+                scope_id
             )
         )
 
@@ -502,9 +460,7 @@ async def get_file_cache(
             WHERE cache_id = ?
             ORDER BY item_index
             """,
-            (
-                cache[0],
-            )
+            (cache[0],)
         )
 
         items = await cursor.fetchall()
@@ -517,7 +473,8 @@ async def get_file_cache(
             "cache_key": cache[1],
             "source_url": cache[2],
             "mode": cache[3],
-            "created_at": cache[4],
+            "scope_id": cache[4],
+            "created_at": cache[5],
             "items": [
                 {
                     "item_id": row[0],
@@ -534,12 +491,22 @@ async def get_file_cache(
 async def create_file_cache(
     source_url,
     mode,
-    created_at
+    created_at,
+    scope_id
 ):
+    scope_id = normalize_private_scope(scope_id)
+
+    if scope_id is None:
+        return None
+
     cache_key = build_cache_key(
         source_url,
-        mode
+        mode,
+        scope_id
     )
+
+    if cache_key is None:
+        return None
 
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
@@ -548,14 +515,16 @@ async def create_file_cache(
                 cache_key,
                 source_url,
                 mode,
+                scope_id,
                 created_at
             )
-            VALUES (?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?)
             """,
             (
                 cache_key,
                 source_url,
                 mode,
+                scope_id,
                 created_at
             )
         )
@@ -570,9 +539,11 @@ async def create_file_cache(
             SELECT cache_id
             FROM file_cache
             WHERE cache_key = ?
+            AND scope_id = ?
             """,
             (
                 cache_key,
+                scope_id
             )
         )
 
@@ -588,7 +559,27 @@ async def save_file_cache_items(
     cache_id,
     items
 ):
+    if not items:
+        return
+
     async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            """
+            SELECT scope_id
+            FROM file_cache
+            WHERE cache_id = ?
+            """,
+            (cache_id,)
+        )
+
+        cache = await cursor.fetchone()
+
+        if cache is None:
+            return
+
+        if not is_private_scope(cache[0]):
+            return
+
         for item in items:
             if item["file_type"] not in VALID_FILE_TYPES:
                 continue
@@ -632,21 +623,33 @@ async def save_file_cache_items(
 
 async def delete_file_cache(
     source_url,
-    mode
+    mode,
+    scope_id
 ):
+    scope_id = normalize_private_scope(scope_id)
+
+    if scope_id is None:
+        return
+
     cache_key = build_cache_key(
         source_url,
-        mode
+        mode,
+        scope_id
     )
+
+    if cache_key is None:
+        return
 
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             """
             DELETE FROM file_cache
             WHERE cache_key = ?
+            AND scope_id = ?
             """,
             (
                 cache_key,
+                scope_id
             )
         )
 
@@ -659,6 +662,9 @@ async def set_voice_edit_session(
     message_id,
     file_id
 ):
+    if not isinstance(chat_id, int):
+        return
+
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             """
@@ -686,9 +692,7 @@ async def set_voice_edit_session(
         await db.commit()
 
 
-async def get_voice_edit_session(
-    user_id
-):
+async def get_voice_edit_session(user_id):
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
             """
@@ -699,9 +703,7 @@ async def get_voice_edit_session(
             FROM voice_edit_sessions
             WHERE user_id = ?
             """,
-            (
-                user_id,
-            )
+            (user_id,)
         )
 
         row = await cursor.fetchone()
@@ -716,18 +718,14 @@ async def get_voice_edit_session(
         }
 
 
-async def delete_voice_edit_session(
-    user_id
-):
+async def delete_voice_edit_session(user_id):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             """
             DELETE FROM voice_edit_sessions
             WHERE user_id = ?
             """,
-            (
-                user_id,
-            )
+            (user_id,)
         )
 
         await db.commit()
@@ -742,7 +740,13 @@ async def add_download(
     source_url,
     mode
 ):
-    import time
+    scope_id = normalize_private_scope(scope_id)
+
+    if scope_id is None:
+        return None
+
+    if mode not in VALID_MODES:
+        return None
 
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
@@ -756,9 +760,7 @@ async def add_download(
             WHERE scope_id = ?
             AND status = 'active'
             """,
-            (
-                scope_id,
-            )
+            (scope_id,)
         )
 
         active_count = (
@@ -772,9 +774,7 @@ async def add_download(
             WHERE scope_id = ?
             AND status = 'queued'
             """,
-            (
-                scope_id,
-            )
+            (scope_id,)
         )
 
         queued_count = (
@@ -834,9 +834,12 @@ async def add_download(
         }
 
 
-async def get_next_queued_download(
-    scope_id
-):
+async def get_next_queued_download(scope_id):
+    scope_id = normalize_private_scope(scope_id)
+
+    if scope_id is None:
+        return None
+
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             "BEGIN IMMEDIATE"
@@ -849,9 +852,7 @@ async def get_next_queued_download(
             WHERE scope_id = ?
             AND status = 'active'
             """,
-            (
-                scope_id,
-            )
+            (scope_id,)
         )
 
         active_count = (
@@ -879,9 +880,7 @@ async def get_next_queued_download(
             ORDER BY created_at, id
             LIMIT 1
             """,
-            (
-                scope_id,
-            )
+            (scope_id,)
         )
 
         row = await cursor.fetchone()
@@ -896,9 +895,7 @@ async def get_next_queued_download(
             SET status = 'active'
             WHERE id = ?
             """,
-            (
-                row[0],
-            )
+            (row[0],)
         )
 
         await db.commit()
@@ -916,35 +913,27 @@ async def get_next_queued_download(
         }
 
 
-async def finish_download(
-    job_id
-):
+async def finish_download(job_id):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             """
             DELETE FROM download_queue
             WHERE id = ?
             """,
-            (
-                job_id,
-            )
+            (job_id,)
         )
 
         await db.commit()
 
 
-async def fail_download(
-    job_id
-):
+async def fail_download(job_id):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             """
             DELETE FROM download_queue
             WHERE id = ?
             """,
-            (
-                job_id,
-            )
+            (job_id,)
         )
 
         await db.commit()
