@@ -120,7 +120,7 @@ def parse_duration_string(
 
         if (
             end_time is not None
-            and 1 <= end_time <= 60
+            and end_time > 0
         ):
             return 0.0, end_time
 
@@ -207,8 +207,10 @@ async def handle_audio_extract_command(
 
     if reply.video:
         target_file_id = reply.video.file_id
+
     elif reply.audio:
         target_file_id = reply.audio.file_id
+
     elif reply.document:
         mime = reply.document.mime_type or ""
 
