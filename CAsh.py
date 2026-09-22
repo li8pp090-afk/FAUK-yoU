@@ -47,23 +47,22 @@ async def get_chat_settings(chat_id: int, thread_id: int = 0) -> tuple[str, bool
 
 async def set_chat_mode(chat_id: int, thread_id: int, mode: str):
     async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("""
-            INSERT INTO chat_settings (chat_id, thread_id, mode, delete_links)
-            VALUES (?, ?, ?, 0)
-            ON CONFLICT(chat_id, thread_id) DO UPDATE SET mode = excluded.mode
-        """, (chat_id, thread_id, mode))
+        _, delete_links = await get_chat_settings(chat_id, thread_id)
+        await db.execute(
+            "INSERT OR REPLACE INTO chat_settings (chat_id, thread_id, mode, delete_links) VALUES (?, ?, ?, ?)",
+            (chat_id, thread_id, mode, 1 if delete_links else 0)
+        )
         await db.commit()
 
 async def toggle_delete_links_setting(chat_id: int, thread_id: int) -> bool:
     async with aiosqlite.connect(DB_PATH) as db:
-        _, current_delete_links = await get_chat_settings(chat_id, thread_id)
-        new_status = 0 if current_delete_links else 1
+        mode, current_delete_links = await get_chat_settings(chat_id, thread_id)
+        new_status = not current_delete_links
+        new_status_int = 1 if new_status else 0
         
-        await db.execute("""
-            INSERT INTO chat_settings (chat_id, thread_id, mode, delete_links)
-            VALUES (?, ?, 'normal', ?)
-            ON CONFLICT(chat_id, thread_id) DO UPDATE SET delete_links = excluded.delete_links
-        """, (chat_id, thread_id, new_status))
+        await db.execute(
+            "INSERT OR REPLACE INTO chat_settings (chat_id, thread_id, mode, delete_links) VALUES (?, ?, ?, ?)",
+            (chat_id, thread_id, mode, new_status_int)
+        )
         await db.commit()
-        
-        return bool(new_status)
+        return new_status

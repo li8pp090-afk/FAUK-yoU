@@ -9,7 +9,7 @@ from aiogram.types import Message, FSInputFile, CallbackQuery, InputMediaDocumen
 from CAsh import init_db, get_cached_file_id, save_file_id, get_chat_settings
 from yTFMe import download_with_ytdlp, convert_to_opus_ogg, merge_best_quality
 from NAMe import process_downloaded_filenames
-from bToN import handle_edit_command, handle_mode_callback, get_rotating_message_keyboard
+from bToN import handle_edit_command, handle_mode_callback, get_rotating_message_keyboard, extract_thread_id
 from Reply import CMD_EDIT, TRIGGER_BOT_KEYWORD, TXT_START_DOWNLOAD, TXT_DOWNLOAD_FAILED, TXT_TAKEOFF, ROTATING_MESSAGES
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -87,7 +87,7 @@ async def process_audio_url(message: Message, url: str):
     try:
         user_semaphore = user_manager.get_user_semaphore(user_id)
         async with user_semaphore:
-            thread_id = message.message_thread_id or 0
+            thread_id = extract_thread_id(message)
             mode, delete_links = await get_chat_settings(message.chat.id, thread_id)
 
             if delete_links:

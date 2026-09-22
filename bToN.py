@@ -84,11 +84,17 @@ def get_rotating_message_keyboard(user_id: int) -> InlineKeyboardMarkup:
         ]
     )
 
+def extract_thread_id(message_or_query) -> int:
+    msg = message_or_query if isinstance(message_or_query, Message) else message_or_query.message
+    if getattr(msg, "is_topic_message", False):
+        return getattr(msg, "message_thread_id", 0) or 0
+    return 0
+
 async def handle_edit_command(message: Message, bot: Bot):
     if not await is_admin(bot, message):
         return
     
-    thread_id = message.message_thread_id or 0
+    thread_id = extract_thread_id(message)
     mode, delete_links = await get_chat_settings(message.chat.id, thread_id)
     await message.reply(
         TXT_EDIT_PROMPT,
@@ -100,24 +106,26 @@ async def handle_mode_callback(query: CallbackQuery, bot: Bot):
         await query.answer(TXT_ADMIN_ONLY, show_alert=True)
         return
     
-    thread_id = query.message.message_thread_id or 0
+    chat_id = query.message.chat.id
+    thread_id = extract_thread_id(query)
     
     if query.data == "toggle_delete_links":
-        new_delete_links = await toggle_delete_links_setting(query.message.chat.id, thread_id)
-        current_mode, _ = await get_chat_settings(query.message.chat.id, thread_id)
+        new_delete_links = await toggle_delete_links_setting(chat_id, thread_id)
+        current_mode, _ = await get_chat_settings(chat_id, thread_id)
         await query.message.edit_text(
             TXT_EDIT_PROMPT,
             reply_markup=get_settings_keyboard(current_mode, new_delete_links)
         )
     else:
-        current_mode, current_delete_links = await get_chat_settings(query.message.chat.id, thread_id)
+        current_mode, current_delete_links = await get_chat_settings(chat_id, thread_id)
         requested_mode = query.data.split("_")[-1]
+        
         if requested_mode == current_mode:
             new_mode = "voice" if current_mode == "normal" else "normal"
         else:
             new_mode = requested_mode
         
-        await set_chat_mode(query.message.chat.id, thread_id, new_mode)
+        await set_chat_mode(chat_id, thread_id, new_mode)
         await query.message.edit_text(
             TXT_EDIT_PROMPT,
             reply_markup=get_settings_keyboard(new_mode, current_delete_links)
