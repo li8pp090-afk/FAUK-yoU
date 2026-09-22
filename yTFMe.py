@@ -1,127 +1,76 @@
 import asyncio
-from pathlib import Path
+import os
+import tempfile
 
-import yt_dlp
-
-
-def ytdlp_options(
-    workdir: str,
-    mode: str,
-) -> dict:
-    options = {
-        "quiet": True,
-        "no_warnings": True,
-        "noprogress": True,
-        "noplaylist": True,
-        "paths": {
-            "home": workdir,
-        },
-    }
-
-    options["format"] = (
-        "bestaudio/best"
-        if mode == "voice"
-        else "bestvideo+bestaudio/best"
+async def download_with_ytdlp(url: str, tmp_dir: str, mode: str) -> bool:
+    output_template = os.path.join(
+        tmp_dir, 
+        "%(playlist_index)s_%(uploader,channel,creator)s - %(title)s.%(ext)s"
     )
 
-    return options
+    if mode == "voice":
+        format_option = "bestaudio/best"
+    else:
+        format_option = "bestvideo+bestaudio/best"
 
+    yt_dlp_cmd = [
+        "yt-dlp",
+        "--yes-playlist",
+        "-f", format_option,
+        "-o", output_template,
+        "--restrict-filenames",
+        url
+    ]
 
-def download_with_ytdlp(
-    url: str,
-    mode: str,
-    workdir: str,
-):
-    options = ytdlp_options(
-        workdir,
-        mode,
+    proc_download = await asyncio.create_subprocess_exec(
+        *yt_dlp_cmd,
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL
     )
+    await proc_download.wait()
+    return proc_download.returncode == 0
 
-    with yt_dlp.YoutubeDL(options) as ydl:
-        info = ydl.extract_info(
-            url,
-            download=True,
-        )
+async def convert_to_opus_ogg(downloaded_file: str, tmp_dir: str) -> str:
+    ogg_path = tempfile.mktemp(suffix=".ogg", dir=tmp_dir)
 
-        prepared = Path(
-            ydl.prepare_filename(info)
-        )
-
-        if prepared.exists():
-            return prepared, info
-
-        files = [
-            path
-            for path in Path(workdir).iterdir()
-            if path.is_file()
-        ]
-
-        if not files:
-            raise RuntimeError(
-                "download failed"
-            )
-
-        return max(
-            files,
-            key=lambda path: path.stat().st_mtime,
-        ), info
-
-
-async def convert_to_ogg_opus(
-    source: Path,
-    target: Path,
-):
-    process = await asyncio.create_subprocess_exec(
+    ffmpeg_cmd = [
         "ffmpeg",
         "-y",
-        "-i",
-        str(source),
-        "-vn",
-        "-c:a",
-        "libopus",
-        "-f",
-        "ogg",
-        str(target),
+        "-i", downloaded_file,
+        "-c:a", "libopus",
+        "-f", "ogg",
+        ogg_path
+    ]
+
+    proc_ffmpeg = await asyncio.create_subprocess_exec(
+        *ffmpeg_cmd,
         stdout=asyncio.subprocess.DEVNULL,
-        stderr=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL
     )
+    await proc_ffmpeg.wait()
 
-    code = await process.wait()
+    if os.path.exists(ogg_path):
+        return ogg_path
+    return None
 
-    if code != 0 or not target.exists():
-        raise RuntimeError(
-            "opus conversion failed"
-        )
+async def merge_best_quality(downloaded_file: str, tmp_dir: str) -> str:
+    output_path = tempfile.mktemp(dir=tmp_dir)
 
-
-async def cut_audio_segment(
-    source_path: Path,
-    output_path: Path,
-    start: float,
-    duration: float,
-) -> bool:
-    process = await asyncio.create_subprocess_exec(
+    ffmpeg_cmd = [
         "ffmpeg",
         "-y",
-        "-ss",
-        str(start),
-        "-i",
-        str(source_path),
-        "-t",
-        str(duration),
-        "-vn",
-        "-c:a",
-        "libopus",
-        "-f",
-        "ogg",
-        str(output_path),
+        "-i", downloaded_file,
+        "-c", "copy",
+        output_path
+    ]
+
+    proc_ffmpeg = await asyncio.create_subprocess_exec(
+        *ffmpeg_cmd,
         stdout=asyncio.subprocess.DEVNULL,
-        stderr=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL
     )
+    await proc_ffmpeg.wait()
 
-    code = await process.wait()
-
-    return (
-        code == 0
-        and output_path.exists()
-    )
+    if os.path.exists(output_path):
+        return output_path
+    return downloaded_file
