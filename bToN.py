@@ -3,8 +3,8 @@ import random
 from collections import defaultdict
 from aiogram import Bot
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
-from CAsh import get_chat_mode, set_chat_mode
-from Reply import TXT_EDIT_PROMPT, TXT_ADMIN_ONLY, BTN_NORMAL, BTN_VOICE, BTN_DEVELOPER
+from CAsh import get_chat_settings, set_chat_mode, toggle_delete_links_setting
+from Reply import TXT_EDIT_PROMPT, TXT_ADMIN_ONLY, BTN_NORMAL, BTN_VOICE, BTN_DELETE_LINKS, BTN_DEVELOPER
 
 developer_pools = defaultdict(list)
 developer_color_indices = defaultdict(int)
@@ -56,15 +56,19 @@ async def is_admin(bot: Bot, message_or_query) -> bool:
 
     return False
 
-def get_settings_keyboard(current_mode: str) -> InlineKeyboardMarkup:
+def get_settings_keyboard(current_mode: str, delete_links: bool) -> InlineKeyboardMarkup:
     normal_style = "primary" if current_mode == "normal" else "danger"
     voice_style = "primary" if current_mode == "voice" else "danger"
+    delete_links_style = "primary" if delete_links else "danger"
     
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(text=BTN_NORMAL, callback_data="set_mode_normal", style=normal_style),
                 InlineKeyboardButton(text=BTN_VOICE, callback_data="set_mode_voice", style=voice_style)
+            ],
+            [
+                InlineKeyboardButton(text=BTN_DELETE_LINKS, callback_data="toggle_delete_links", style=delete_links_style)
             ]
         ]
     )
@@ -85,10 +89,10 @@ async def handle_edit_command(message: Message, bot: Bot):
         return
     
     thread_id = message.message_thread_id or 0
-    mode = await get_chat_mode(message.chat.id, thread_id)
+    mode, delete_links = await get_chat_settings(message.chat.id, thread_id)
     await message.reply(
         TXT_EDIT_PROMPT,
-        reply_markup=get_settings_keyboard(mode)
+        reply_markup=get_settings_keyboard(mode, delete_links)
     )
 
 async def handle_mode_callback(query: CallbackQuery, bot: Bot):
@@ -97,18 +101,26 @@ async def handle_mode_callback(query: CallbackQuery, bot: Bot):
         return
     
     thread_id = query.message.message_thread_id or 0
-    requested_mode = query.data.split("_")[-1]
-    current_mode = await get_chat_mode(query.message.chat.id, thread_id)
     
-    if requested_mode == current_mode:
-        new_mode = "voice" if current_mode == "normal" else "normal"
+    if query.data == "toggle_delete_links":
+        new_delete_links = await toggle_delete_links_setting(query.message.chat.id, thread_id)
+        current_mode, _ = await get_chat_settings(query.message.chat.id, thread_id)
+        await query.message.edit_text(
+            TXT_EDIT_PROMPT,
+            reply_markup=get_settings_keyboard(current_mode, new_delete_links)
+        )
     else:
-        new_mode = requested_mode
-    
-    await set_chat_mode(query.message.chat.id, thread_id, new_mode)
-    
-    await query.message.edit_text(
-        TXT_EDIT_PROMPT,
-        reply_markup=get_settings_keyboard(new_mode)
-    )
+        current_mode, current_delete_links = await get_chat_settings(query.message.chat.id, thread_id)
+        requested_mode = query.data.split("_")[-1]
+        if requested_mode == current_mode:
+            new_mode = "voice" if current_mode == "normal" else "normal"
+        else:
+            new_mode = requested_mode
+        
+        await set_chat_mode(query.message.chat.id, thread_id, new_mode)
+        await query.message.edit_text(
+            TXT_EDIT_PROMPT,
+            reply_markup=get_settings_keyboard(new_mode, current_delete_links)
+        )
+
     await query.answer()

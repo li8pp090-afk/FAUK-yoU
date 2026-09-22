@@ -6,7 +6,7 @@ from collections import defaultdict
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import Message, FSInputFile, CallbackQuery, InputMediaDocument
 
-from CAsh import init_db, get_cached_file_id, save_file_id, get_chat_mode
+from CAsh import init_db, get_cached_file_id, save_file_id, get_chat_settings
 from yTFMe import download_with_ytdlp, convert_to_opus_ogg, merge_best_quality
 from NAMe import process_downloaded_filenames
 from bToN import handle_edit_command, handle_mode_callback, get_rotating_message_keyboard
@@ -69,7 +69,7 @@ async def send_takeoff_message():
 async def on_edit_command(message: Message):
     await handle_edit_command(message, bot)
 
-@dp.callback_query(F.data.startswith("set_mode_"))
+@dp.callback_query(F.data.startswith("set_mode_") | (F.data == "toggle_delete_links"))
 async def on_mode_callback(query: CallbackQuery):
     await handle_mode_callback(query, bot)
 
@@ -88,7 +88,13 @@ async def process_audio_url(message: Message, url: str):
         user_semaphore = user_manager.get_user_semaphore(user_id)
         async with user_semaphore:
             thread_id = message.message_thread_id or 0
-            mode = await get_chat_mode(message.chat.id, thread_id)
+            mode, delete_links = await get_chat_settings(message.chat.id, thread_id)
+
+            if delete_links:
+                try:
+                    await message.delete()
+                except Exception:
+                    pass
 
             full_cache_key = f"{url}_{mode}"
             cached_file_id = await get_cached_file_id(full_cache_key)
@@ -97,15 +103,15 @@ async def process_audio_url(message: Message, url: str):
                 file_ids = cached_file_id.split(",")
                 if mode == "voice":
                     for fid in file_ids:
-                        await message.reply_voice(voice=fid)
+                        await bot.send_voice(chat_id=message.chat.id, message_thread_id=message.message_thread_id, voice=fid)
                 else:
                     for i in range(0, len(file_ids), 10):
                         chunk = file_ids[i:i+10]
                         media_group = [InputMediaDocument(media=fid) for fid in chunk]
-                        await message.reply_media_group(media=media_group)
+                        await bot.send_media_group(chat_id=message.chat.id, message_thread_id=message.message_thread_id, media=media_group)
                 return
 
-            status_msg = await message.reply(TXT_START_DOWNLOAD)
+            status_msg = await bot.send_message(chat_id=message.chat.id, message_thread_id=message.message_thread_id, text=TXT_START_DOWNLOAD)
 
             tmp_dir = tempfile.mkdtemp()
             
@@ -136,7 +142,7 @@ async def process_audio_url(message: Message, url: str):
                     processed_path = await convert_to_opus_ogg(downloaded_file, tmp_dir)
                     if processed_path and os.path.exists(processed_path):
                         processed_files.append(processed_path)
-                        sent_msg = await message.reply_voice(voice=FSInputFile(processed_path))
+                        sent_msg = await bot.send_voice(chat_id=message.chat.id, message_thread_id=message.message_thread_id, voice=FSInputFile(processed_path))
                         if sent_msg and sent_msg.voice:
                             saved_file_ids.append(sent_msg.voice.file_id)
             else:
@@ -151,7 +157,7 @@ async def process_audio_url(message: Message, url: str):
                     chunk = processed_files[i:i+10]
                     media_group = [InputMediaDocument(media=FSInputFile(f)) for f in chunk]
                     
-                    sent_messages = await message.reply_media_group(media=media_group)
+                    sent_messages = await bot.send_media_group(chat_id=message.chat.id, message_thread_id=message.message_thread_id, media=media_group)
                     for msg in sent_messages:
                         if msg.document:
                             saved_file_ids.append(msg.document.file_id)

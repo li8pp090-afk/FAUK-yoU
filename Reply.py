@@ -10,6 +10,7 @@ TXT_TAKEOFF = "اشتغل البوت مرتلخ مولاي\nمواح"
 
 BTN_NORMAL = "نورمال"
 BTN_VOICE = "فويس"
+BTN_DELETE_LINKS = "مسح الروابط"
 BTN_DEVELOPER = "المطور"
 
 ROTATING_MESSAGES = [

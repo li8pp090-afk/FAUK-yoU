@@ -16,9 +16,14 @@ async def init_db():
                 chat_id INTEGER,
                 thread_id INTEGER DEFAULT 0,
                 mode TEXT DEFAULT 'normal',
+                delete_links INTEGER DEFAULT 0,
                 PRIMARY KEY (chat_id, thread_id)
             )
         """)
+        try:
+            await db.execute("ALTER TABLE chat_settings ADD COLUMN delete_links INTEGER DEFAULT 0")
+        except Exception:
+            pass
         await db.commit()
 
 async def get_cached_file_id(url_key: str) -> str:
@@ -32,13 +37,30 @@ async def save_file_id(url_key: str, file_id: str):
         await db.execute("INSERT OR REPLACE INTO file_cache (url_key, file_id) VALUES (?, ?)", (url_key, file_id))
         await db.commit()
 
-async def get_chat_mode(chat_id: int, thread_id: int = 0) -> str:
+async def get_chat_settings(chat_id: int, thread_id: int = 0) -> tuple[str, bool]:
     async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute("SELECT mode FROM chat_settings WHERE chat_id = ? AND thread_id = ?", (chat_id, thread_id)) as cursor:
+        async with db.execute("SELECT mode, delete_links FROM chat_settings WHERE chat_id = ? AND thread_id = ?", (chat_id, thread_id)) as cursor:
             row = await cursor.fetchone()
-            return row[0] if row else "normal"
+            if row:
+                return row[0], bool(row[1])
+            return "normal", False
 
 async def set_chat_mode(chat_id: int, thread_id: int, mode: str):
     async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("INSERT OR REPLACE INTO chat_settings (chat_id, thread_id, mode) VALUES (?, ?, ?)", (chat_id, thread_id, mode))
+        _, delete_links = await get_chat_settings(chat_id, thread_id)
+        await db.execute(
+            "INSERT OR REPLACE INTO chat_settings (chat_id, thread_id, mode, delete_links) VALUES (?, ?, ?, ?)",
+            (chat_id, thread_id, mode, 1 if delete_links else 0)
+        )
         await db.commit()
+
+async def toggle_delete_links_setting(chat_id: int, thread_id: int) -> bool:
+    async with aiosqlite.connect(DB_PATH) as db:
+        mode, current_delete_links = await get_chat_settings(chat_id, thread_id)
+        new_status = not current_delete_links
+        await db.execute(
+            "INSERT OR REPLACE INTO chat_settings (chat_id, thread_id, mode, delete_links) VALUES (?, ?, ?, ?)",
+            (chat_id, thread_id, mode, 1 if new_status else 0)
+        )
+        await db.commit()
+        return new_status
