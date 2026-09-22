@@ -39,8 +39,22 @@ async def is_admin(bot: Bot, message_or_query) -> bool:
     if chat.type == "private":
         return True
     
-    member = await bot.get_chat_member(chat.id, user.id)
-    return member.status in ["creator", "administrator"]
+    if isinstance(message_or_query, Message) and message_or_query.sender_chat:
+        if message_or_query.sender_chat.id == chat.id:
+            return True
+        return False
+
+    if user and user.is_bot and user.username == "GroupAnonymousBot":
+        return True
+
+    if user:
+        try:
+            member = await bot.get_chat_member(chat.id, user.id)
+            return member.status in ["creator", "administrator"]
+        except Exception:
+            return False
+
+    return False
 
 def get_settings_keyboard(current_mode: str) -> InlineKeyboardMarkup:
     normal_style = "primary" if current_mode == "normal" else "danger"
