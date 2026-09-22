@@ -22,9 +22,8 @@ async def main():
     bot = Bot(os.environ["BOT_TOKEN"])
     dp = Dispatcher()
 
-    db = await CAsh.create_pool(
-        os.environ["DATABASE_URL"]
-    )
+    db_path = os.getenv("DATABASE_PATH", "bot_database.db")
+    db = await CAsh.create_pool(db_path)
 
     await CAsh.init_db(db)
 
@@ -52,7 +51,10 @@ async def main():
         except Exception:
             pass
 
-    await dp.start_polling(bot)
+    try:
+        await dp.start_polling(bot)
+    finally:
+        await db.close()
 
 
 if __name__ == "__main__":
