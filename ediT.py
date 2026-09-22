@@ -24,84 +24,70 @@ def parse_time(value: str):
         return None
 
     if ":" in value:
-        first, seconds_part = value.split(
-            ":",
-            1,
-        )
+        parts = value.split(":")
 
-        if not first or not seconds_part:
-            return None
+        if len(parts) == 2:
+            minutes_part, seconds_part = parts[0], parts[1]
 
-        if "." in first:
-            hour_text, minute_text = first.split(
-                ".",
-                1,
-            )
+            if "." in minutes_part:
+                h_m = minutes_part.split(".", 1)
+                if not (h_m[0].isdigit() and h_m[1].isdigit()):
+                    return None
+                hours, minutes = int(h_m[0]), int(h_m[1])
+            else:
+                if not minutes_part.isdigit():
+                    return None
+                hours, minutes = 0, int(minutes_part)
 
+            if "." in seconds_part:
+                s_f = seconds_part.split(".", 1)
+                if not (s_f[0].isdigit() and s_f[1].isdigit()):
+                    return None
+                seconds = int(s_f[0])
+                fraction = float(f"0.{s_f[1]}")
+            else:
+                if not seconds_part.isdigit():
+                    return None
+                seconds = int(seconds_part)
+                fraction = 0.0
+
+            if minutes > 59 or seconds > 59:
+                return None
+
+            return hours * 3600 + minutes * 60 + seconds + fraction
+
+        elif len(parts) == 3:
+            hours_part, minutes_part, seconds_part = parts[0], parts[1], parts[2]
             if not (
-                hour_text.isdigit()
-                and minute_text.isdigit()
+                hours_part.isdigit()
+                and minutes_part.isdigit()
+                and seconds_part.isdigit()
             ):
                 return None
 
-            hours = int(hour_text)
-            minutes = int(minute_text)
-
-            if minutes > 59:
-                return None
-        else:
-            if not first.isdigit():
-                return None
-
-            hours = 0
-            minutes = int(first)
-
-            if minutes > 59:
-                return None
-
-        fraction = 0.0
-
-        if "." in seconds_part:
-            seconds_text, fraction_text = seconds_part.split(
-                ".",
-                1,
+            hours, minutes, seconds = (
+                int(hours_part),
+                int(minutes_part),
+                int(seconds_part),
             )
-
-            if not (
-                seconds_text.isdigit()
-                and fraction_text.isdigit()
-            ):
+            if minutes > 59 or seconds > 59:
                 return None
 
-            seconds = int(seconds_text)
+            return hours * 3600 + minutes * 60 + seconds
 
-            if seconds > 59:
+        return None
+
+    if "." in value:
+        parts = value.split(".", 1)
+        if parts[0].isdigit() and parts[1].isdigit():
+            hours = int(parts[0])
+            minutes = int(parts[1])
+            if minutes > 59:
                 return None
-
-            fraction = int(
-                fraction_text
-            ) / 60
-
-        else:
-            if not seconds_part.isdigit():
-                return None
-
-            seconds = int(seconds_part)
-
-            if seconds > 59:
-                return None
-
-        return (
-            hours * 3600
-            + minutes * 60
-            + seconds
-            + fraction
-        )
+            return hours * 3600 + minutes * 60
 
     if value.isdigit():
-        return float(
-            int(value)
-        )
+        return float(int(value))
 
     return None
 
@@ -201,6 +187,7 @@ async def edit_audio(
     media = get_audio_media(replied)
 
     if not media:
+        await message.reply(MESSAGES["audio_extract_failed"])
         return
 
     duration = end - start
@@ -229,6 +216,7 @@ async def edit_audio(
             )
 
             if not success:
+                await message.reply(MESSAGES["audio_extract_failed"])
                 return
 
             await message.reply_voice(
@@ -239,7 +227,7 @@ async def edit_audio(
             )
 
         except Exception:
-            return
+            await message.reply(MESSAGES["audio_extract_failed"])
 
 
 @router.message(
@@ -264,12 +252,10 @@ async def edit_duration(
 ):
     user_id = message.from_user.id
 
-    replied = EDIT_SESSIONS.get(
-        user_id
-    )
-
-    if not replied:
+    if user_id not in EDIT_SESSIONS:
         return
+
+    replied = EDIT_SESSIONS.get(user_id)
 
     value = parse_range(
         message.text

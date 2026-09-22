@@ -276,3 +276,31 @@ async def text_handler(
     if message.chat.type == "private":
         if text == COMMAND_BOT_TRIGGER:
             await rotating_reply(message)
+
+
+async def main():
+    if not BOT_TOKEN:
+        raise ValueError("BOT_TOKEN environment variable is missing!")
+
+    await init_db()
+
+    bot = Bot(token=BOT_TOKEN)
+    dp = Dispatcher()
+
+    button_router = setup_button_handlers(DB_PATH)
+
+    dp.include_router(audio_router)
+    dp.include_router(edit_router)
+    dp.include_router(button_router)
+    dp.include_router(router)
+
+    for _ in range(ACTIVE_DOWNLOADS):
+        asyncio.create_task(worker())
+
+    await send_takeoff_message(bot)
+
+    await dp.start_polling(bot)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

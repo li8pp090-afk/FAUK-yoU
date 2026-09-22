@@ -77,10 +77,12 @@ async def download_media(
         file_id
     )
 
-    await message.bot.download_file(
-        file_info.file_path,
-        destination=output_path,
+    downloaded = await message.bot.download_file(
+        file_info.file_path
     )
+
+    with open(output_path, "wb") as f:
+        f.write(downloaded.read())
 
 
 async def has_audio_stream(
