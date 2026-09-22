@@ -1,6 +1,7 @@
+import os
 import aiosqlite
 
-DB_PATH = "cache.db"
+DB_PATH = os.getenv("DB_PATH", "cache.db")
 
 async def init_db():
     async with aiosqlite.connect(DB_PATH) as db:
