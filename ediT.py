@@ -1,183 +1,296 @@
-from __future__ import annotations
-
-import asyncio
 import re
 import tempfile
 from pathlib import Path
 
-from aiogram import Bot, F, Router
-from aiogram.enums import ChatType
+from aiogram import F, Router
 from aiogram.types import FSInputFile, Message
 
-from Reply import COMMAND_EDIT_AUDIO, MESSAGES
+from Reply import (
+    COMMAND_EDIT_AUDIO,
+    MESSAGES,
+)
 from yTFMe import cut_audio_segment
 
 
-router = Router(name="edit_voice_router")
+router = Router(name="edit_router")
 
-EDIT_SESSIONS: dict[tuple[int, int, int], str] = {}
-
-TIME_PATTERN = re.compile(r"^(?:(\d+)\.)?(\d+):(\d{1,2})$")
+EDIT_SESSIONS = {}
 
 
-def parse_time(value: str) -> int | None:
-    value = value.strip().replace(" ", "")
-    match = TIME_PATTERN.fullmatch(value)
+def parse_time(value: str):
+    value = value.strip()
 
-    if not match:
+    if not value:
         return None
 
-    hours, minutes, seconds = match.groups()
-    hours = int(hours or 0)
-    minutes = int(minutes)
-    seconds = int(seconds)
+    if ":" in value:
+        first, seconds_part = value.split(
+            ":",
+            1,
+        )
 
-    if minutes >= 60 or seconds >= 60:
+        if not first or not seconds_part:
+            return None
+
+        if "." in first:
+            hour_text, minute_text = first.split(
+                ".",
+                1,
+            )
+
+            if not (
+                hour_text.isdigit()
+                and minute_text.isdigit()
+            ):
+                return None
+
+            hours = int(hour_text)
+            minutes = int(minute_text)
+
+            if minutes > 59:
+                return None
+        else:
+            if not first.isdigit():
+                return None
+
+            hours = 0
+            minutes = int(first)
+
+            if minutes > 59:
+                return None
+
+        fraction = 0.0
+
+        if "." in seconds_part:
+            seconds_text, fraction_text = seconds_part.split(
+                ".",
+                1,
+            )
+
+            if not (
+                seconds_text.isdigit()
+                and fraction_text.isdigit()
+            ):
+                return None
+
+            seconds = int(seconds_text)
+
+            if seconds > 59:
+                return None
+
+            fraction = int(
+                fraction_text
+            ) / 60
+
+        else:
+            if not seconds_part.isdigit():
+                return None
+
+            seconds = int(seconds_part)
+
+            if seconds > 59:
+                return None
+
+        return (
+            hours * 3600
+            + minutes * 60
+            + seconds
+            + fraction
+        )
+
+    if value.isdigit():
+        return float(
+            int(value)
+        )
+
+    return None
+
+
+def parse_range(text: str):
+    text = text.strip()
+
+    if not text:
         return None
 
-    return hours * 3600 + minutes * 60 + seconds
+    if (
+        not re.search(r"\s+/\s+", text)
+        and not re.search(r"\s+-\s+", text)
+        and not re.search(r"\s+", text)
+    ):
+        end = parse_time(text)
 
+        if end is None or end <= 0:
+            return None
 
-def parse_range(text: str) -> tuple[int, int] | None:
-    parts = re.split(r"\s*/\s*", text.strip())
+        return 0, end
+
+    if re.search(r"\s+/\s+", text):
+        parts = re.split(
+            r"\s+/\s+",
+            text,
+            maxsplit=1,
+        )
+    elif re.search(r"\s+-\s+", text):
+        parts = re.split(
+            r"\s+-\s+",
+            text,
+            maxsplit=1,
+        )
+    else:
+        parts = re.split(
+            r"\s+",
+            text,
+            maxsplit=1,
+        )
 
     if len(parts) != 2:
         return None
 
-    start = parse_time(parts[0])
-    end = parse_time(parts[1])
+    start_text = parts[0].strip()
+    end_text = parts[1].strip()
 
-    if start is None or end is None or end <= start:
+    if not start_text or not end_text:
+        return None
+
+    start = parse_time(start_text)
+    end = parse_time(end_text)
+
+    if start is None or end is None:
+        return None
+
+    if end <= start:
         return None
 
     return start, end
 
 
-def get_audio_file_id(message: Message) -> str | None:
+def get_audio_media(message: Message):
     if message.voice:
-        return message.voice.file_id
+        return message.voice
 
     if message.audio:
-        return message.audio.file_id
+        return message.audio
 
     if message.document:
-        mime_type = message.document.mime_type or ""
-        if mime_type.startswith("audio/"):
-            return message.document.file_id
+        return message.document
 
     return None
 
 
-def get_session_key(message: Message) -> tuple[int, int, int]:
-    user_id = message.from_user.id if message.from_user else 0
-    thread_id = getattr(message, "message_thread_id", None) or 0
-    return message.chat.id, user_id, thread_id
-
-
-async def download_audio(
-    bot: Bot,
-    file_id: str,
-    path: Path,
+async def download_media(
+    message: Message,
+    media,
+    output_path: Path,
 ):
-    file = await bot.get_file(file_id)
-    await bot.download_file(
-        file.file_path,
-        destination=path,
+    file_info = await message.bot.get_file(
+        media.file_id
+    )
+
+    await message.bot.download_file(
+        file_info.file_path,
+        destination=output_path,
     )
 
 
-async def create_edited_voice(
-    bot: Bot,
+async def edit_audio(
     message: Message,
-    file_id: str,
-    start: int,
-    end: int,
+    replied: Message,
+    start: float,
+    end: float,
 ):
-    with tempfile.TemporaryDirectory(prefix="edit_") as temp_dir:
-        temp_path = Path(temp_dir)
-        source_path = temp_path / "source"
-        output_path = temp_path / "edited.ogg"
+    media = get_audio_media(replied)
 
-        await download_audio(
-            bot,
-            file_id,
-            source_path,
-        )
-
-        duration = end - start
-        success = await cut_audio_segment(
-            source_path=source_path,
-            output_path=output_path,
-            start=start,
-            duration=duration,
-        )
-
-        if not success:
-            await message.reply(MESSAGES["edit_duration_invalid"])
-            return False
-
-        await message.reply_voice(
-            voice=FSInputFile(output_path),
-        )
-
-        return True
-
-
-@router.message(
-    F.chat.type.in_({ChatType.PRIVATE, ChatType.GROUP, ChatType.SUPERGROUP, ChatType.CHANNEL}),
-    F.reply_to_message,
-    F.text.casefold() == COMMAND_EDIT_AUDIO,
-)
-@router.channel_post(
-    F.reply_to_message,
-    F.text.casefold() == COMMAND_EDIT_AUDIO,
-)
-async def start_edit(message: Message):
-    replied_message = message.reply_to_message
-    if not replied_message:
+    if not media:
         return
 
-    file_id = get_audio_file_id(replied_message)
-    if not file_id:
-        return
+    duration = end - start
 
-    key = get_session_key(message)
-    EDIT_SESSIONS[key] = file_id
+    with tempfile.TemporaryDirectory(
+        prefix="edit_"
+    ) as temp_dir:
 
-    await message.reply(MESSAGES["edit_duration_help"])
+        workdir = Path(temp_dir)
 
+        source = workdir / "source"
+        output = workdir / "edited.ogg"
 
-@router.message(
-    F.chat.type.in_({ChatType.PRIVATE, ChatType.GROUP, ChatType.SUPERGROUP, ChatType.CHANNEL}),
-    F.text,
-    lambda msg: get_session_key(msg) in EDIT_SESSIONS,
-)
-@router.channel_post(
-    F.text,
-    lambda msg: get_session_key(msg) in EDIT_SESSIONS,
-)
-async def receive_duration(message: Message, bot: Bot):
-    key = get_session_key(message)
-    file_id = EDIT_SESSIONS.get(key)
+        try:
+            await download_media(
+                message,
+                media,
+                source,
+            )
 
-    if not file_id:
-        return
+            success = await cut_audio_segment(
+                source,
+                output,
+                start,
+                duration,
+            )
 
-    try:
-        duration_range = parse_range(message.text or "")
+            if not success:
+                return
 
-        if not duration_range:
-            await message.reply(MESSAGES["edit_duration_invalid"])
+            await message.reply_voice(
+                voice=FSInputFile(
+                    output,
+                    filename="edited.ogg",
+                )
+            )
+
+        except Exception:
             return
 
-        start, end = duration_range
 
-        await create_edited_voice(
-            bot=bot,
-            message=message,
-            file_id=file_id,
-            start=start,
-            end=end,
+@router.message(
+    F.text.casefold() == COMMAND_EDIT_AUDIO.casefold(),
+    F.reply_to_message,
+)
+async def edit_command(
+    message: Message,
+):
+    EDIT_SESSIONS[
+        message.from_user.id
+    ] = message.reply_to_message
+
+    await message.answer(
+        MESSAGES["edit_duration_help"]
+    )
+
+
+@router.message(F.text)
+async def edit_duration(
+    message: Message,
+):
+    user_id = message.from_user.id
+
+    replied = EDIT_SESSIONS.get(
+        user_id
+    )
+
+    if not replied:
+        return
+
+    value = parse_range(
+        message.text
+    )
+
+    if value is None:
+        await message.answer(
+            MESSAGES["edit_duration_invalid"]
         )
-    finally:
-        EDIT_SESSIONS.pop(key, None)
+        return
+
+    start, end = value
+
+    EDIT_SESSIONS.pop(
+        user_id,
+        None,
+    )
+
+    await edit_audio(
+        message,
+        replied,
+        start,
+        end,
+    )

@@ -97,8 +97,8 @@ async def convert_to_ogg_opus(
 async def cut_audio_segment(
     source_path: Path,
     output_path: Path,
-    start: int,
-    duration: int,
+    start: float,
+    duration: float,
 ) -> bool:
     process = await asyncio.create_subprocess_exec(
         "ffmpeg",
@@ -120,4 +120,8 @@ async def cut_audio_segment(
     )
 
     code = await process.wait()
-    return code == 0 and output_path.exists()
+
+    return (
+        code == 0
+        and output_path.exists()
+    )

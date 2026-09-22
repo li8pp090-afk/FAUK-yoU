@@ -1,41 +1,28 @@
 import hashlib
 import re
+
 from urllib.parse import urlparse
 
 
-UPPER_EXCEPTIONS = set("ATFGUJNML")
-
+UPPER_EXCEPTIONS = set(
+    "ATFGUJNML"
+)
 
 IGNORED_HOSTS = {
     "t.me",
     "telegram.me",
-    "telegram.dog",
-    "www.t.me",
-    "www.telegram.me",
-    "www.telegram.dog",
-    "youtube.com",
     "www.youtube.com",
-    "m.youtube.com",
+    "youtube.com",
     "youtu.be",
-    "www.youtu.be",
+    "m.youtube.com",
 }
 
 
-def clean_component(value: str) -> str:
-    value = (value or "").strip()
-
-    if not value:
-        return ""
-
+def clean_component(
+    value: str,
+) -> str:
     value = re.sub(
-        r"[^\w\s]",
-        "",
-        value,
-        flags=re.UNICODE,
-    )
-
-    value = re.sub(
-        r"[\r\n\t]+",
+        r'[\\/:*?"<>|]+',
         " ",
         value,
     )
@@ -46,70 +33,79 @@ def clean_component(value: str) -> str:
         value,
     ).strip()
 
-    chars = []
+    return value
 
-    for char in value:
-        if char.isascii() and char.isalpha():
-            chars.append(
+
+def format_title(
+    value: str,
+) -> str:
+    value = clean_component(
+        value
+    )
+
+    result = []
+
+    for index, char in enumerate(value):
+        if (
+            char.isalpha()
+            and char.upper()
+            in UPPER_EXCEPTIONS
+        ):
+            result.append(
                 char.upper()
-                if char.upper() in UPPER_EXCEPTIONS
-                else char.lower()
             )
         else:
-            chars.append(char)
+            result.append(char)
 
-    return "".join(chars)
+    return "".join(result)
 
 
 def build_filename(
     info: dict,
     actual_path,
 ):
-    publisher = clean_component(
-        info.get("channel")
-        or info.get("uploader")
-        or info.get("creator")
-        or ""
-    )
-
-    title = clean_component(
-        info.get("title") or ""
-    )
-
-    if publisher and title:
-        stem = f"{publisher} - {title}"
-    else:
-        stem = (
-            publisher
-            or title
-            or clean_component(actual_path.stem)
-            or "file"
+    title = format_title(
+        str(
+            info.get("title")
+            or "media"
         )
+    )
 
-    return f"{stem}{actual_path.suffix}"
+    ext = actual_path.suffix
+
+    if not ext:
+        ext = ".bin"
+
+    return f"{title}{ext}"
 
 
-def is_ignored_url(url: str) -> bool:
+def is_ignored_url(
+    url: str,
+) -> bool:
     try:
         host = (
-            urlparse(url).hostname
-            or ""
-        ).lower()
-
-        return (
-            host in IGNORED_HOSTS
-            or host.endswith(".telegram.org")
-            or host.endswith(".youtube.com")
+            urlparse(url)
+            .netloc
+            .lower()
+            .split(":")[0]
         )
-
     except Exception:
         return False
 
+    return host in IGNORED_HOSTS
 
-def normalize_url(text: str):
+
+def normalize_url(
+    text: str,
+):
+    text = text.strip()
+
+    if not text:
+        return None
+
     match = re.search(
-        r"https?://\S+",
-        text or "",
+        r"https?://[^\s]+",
+        text,
     )
 
     if not match:
@@ -120,7 +116,9 @@ def normalize_url(text: str):
     )
 
 
-def sha256_id(value: str) -> str:
+def sha256_id(
+    value: str,
+) -> str:
     return hashlib.sha256(
         value.encode("utf-8")
     ).hexdigest()
