@@ -1,625 +1,474 @@
-import os
-import re
+import asyncio
+import hashlib
 import shutil
 import subprocess
-import tempfile
+from pathlib import Path
 
 import yt_dlp
+from aiogram.types import FSInputFile
 
-from SeTTiNGs import build_filename
-
-
-DOWNLOAD_ROOT = "downloads"
+from yoU import make_filename
 
 
-def create_job_directory():
-    os.makedirs(
-        DOWNLOAD_ROOT,
-        exist_ok=True
-    )
+DOWNLOAD_DIR = Path(
+    "downloads"
+)
 
-    return tempfile.mkdtemp(
-        prefix="job_",
-        dir=DOWNLOAD_ROOT
-    )
+MAX_CONCURRENT_PER_USER = 3
+WORKER_IDLE_TIMEOUT = 5
+
+workers = {}
 
 
-def cleanup_path(path):
-    if not path:
-        return
-
-    try:
-        if os.path.isdir(path):
-            shutil.rmtree(
-                path,
-                ignore_errors=True
-            )
-        elif os.path.isfile(path):
-            os.remove(path)
-    except Exception:
-        pass
-
-
-def get_entries(info):
-    entries = info.get("entries")
-
-    if not entries:
-        return [info]
-
-    return [
-        entry
-        for entry in entries
-        if entry
-    ]
-
-
-def get_entry_url(entry):
-    return (
-        entry.get("webpage_url")
-        or entry.get("original_url")
-        or entry.get("url")
-    )
-
-
-def get_downloaded_path(
-    info,
-    job_directory,
-    ydl
+def make_job_id(
+    user_id,
+    message_id
 ):
-    filepath = info.get("filepath")
+    raw = (
+        f"{user_id}:"
+        f"{message_id}:"
+        f"{asyncio.get_running_loop().time()}"
+    )
 
-    if filepath:
-        filepath = os.path.abspath(
-            filepath
+    return hashlib.sha256(
+        raw.encode()
+    ).hexdigest()[:32]
+
+
+def find_file(
+    directory,
+    prefix
+):
+    files = [
+        p
+        for p in directory.glob(
+            f"{prefix}.*"
         )
-
-        if os.path.isfile(filepath):
-            return filepath
-
-    prepared_filename = ydl.prepare_filename(
-        info
-    )
-
-    prepared_filename = os.path.abspath(
-        prepared_filename
-    )
-
-    if os.path.isfile(
-        prepared_filename
-    ):
-        return prepared_filename
-
-    files = []
-
-    for root, _, filenames in os.walk(
-        job_directory
-    ):
-        for filename in filenames:
-            file_path = os.path.join(
-                root,
-                filename
-            )
-
-            if os.path.isfile(
-                file_path
-            ):
-                files.append(
-                    file_path
-                )
+        if p.suffix not in (
+            ".part",
+            ".ytdl",
+            ".temp"
+        )
+    ]
 
     if not files:
         raise FileNotFoundError(
-            "Downloaded file was not found"
+            "Downloaded file not found"
         )
 
     return max(
         files,
-        key=os.path.getmtime
+        key=lambda p: p.stat().st_mtime
     )
 
 
-def rename_downloaded_file(
-    source_file,
-    info
-):
-    extension = os.path.splitext(
-        source_file
-    )[1].lstrip(".")
-
-    if not extension:
-        extension = info.get(
-            "ext"
-        ) or "bin"
-
-    final_name = build_filename(
-        info,
-        extension
-    )
-
-    final_path = os.path.join(
-        os.path.dirname(source_file),
-        final_name
-    )
-
-    if (
-        os.path.abspath(source_file)
-        == os.path.abspath(final_path)
-    ):
-        return final_path
-
-    if os.path.exists(
-        final_path
-    ):
-        base, ext = os.path.splitext(
-            final_path
-        )
-
-        counter = 2
-
-        while os.path.exists(
-            f"{base} ({counter}){ext}"
-        ):
-            counter += 1
-
-        final_path = (
-            f"{base} ({counter}){ext}"
-        )
-
-    os.replace(
-        source_file,
-        final_path
-    )
-
-    return final_path
-
-
-def get_download_options(
-    job_directory,
-    format_name
-):
-    return {
-        "format": format_name,
-        "outtmpl": os.path.join(
-            job_directory,
-            "%(id)s.%(ext)s"
-        )
-    }
-
-
-def get_info_options():
-    return {}
-
-
-def get_media_info(url):
-    with yt_dlp.YoutubeDL(
-        get_info_options()
-    ) as ydl:
-        return ydl.extract_info(
-            url,
-            download=False
-        )
-
-
-def download_file(
-    url,
-    job_directory,
-    format_name
-):
-    options = get_download_options(
-        job_directory,
-        format_name
-    )
-
-    with yt_dlp.YoutubeDL(
-        options
-    ) as ydl:
-        info = ydl.extract_info(
-            url,
-            download=True
-        )
-
-        downloaded_path = get_downloaded_path(
-            info,
-            job_directory,
-            ydl
-        )
-
-    return (
-        downloaded_path,
-        info
-    )
-
-
-def download_virtual_one(
-    url,
-    job_directory
-):
-    source_file, info = download_file(
-        url,
-        job_directory,
-        "bestvideo+bestaudio/best"
-    )
-
-    return rename_downloaded_file(
-        source_file,
-        info
-    )
-
-
-def download_virtual(url):
-    job_directory = create_job_directory()
+def remove_path(path):
+    if not path:
+        return
 
     try:
-        info = get_media_info(
-            url
-        )
+        path = Path(path)
 
-        entries = get_entries(
-            info
-        )
+        if path.is_file():
+            path.unlink()
 
-        file_paths = []
-
-        for entry in entries:
-            entry_url = get_entry_url(
-                entry
+        elif path.is_dir():
+            shutil.rmtree(
+                path,
+                ignore_errors=True
             )
-
-            if not entry_url:
-                continue
-
-            file_path = download_virtual_one(
-                entry_url,
-                job_directory
-            )
-
-            file_paths.append(
-                file_path
-            )
-
-        if not file_paths:
-            raise FileNotFoundError(
-                "No downloadable files were found"
-            )
-
-        return (
-            job_directory,
-            file_paths
-        )
 
     except Exception:
-        cleanup_path(
-            job_directory
+        pass
+
+
+def cleanup_job_files(job_id):
+    if (
+        not job_id
+        or not DOWNLOAD_DIR.exists()
+    ):
+        return
+
+    for path in DOWNLOAD_DIR.rglob(
+        f"{job_id}.*"
+    ):
+        remove_path(path)
+
+
+def download_normal(
+    url,
+    job_id
+):
+    DOWNLOAD_DIR.mkdir(
+        parents=True,
+        exist_ok=True
+    )
+
+    try:
+        with yt_dlp.YoutubeDL({
+            "format": (
+                "bestvideo*+bestaudio/best"
+            ),
+            "outtmpl": str(
+                DOWNLOAD_DIR
+                / f"{job_id}.%(ext)s"
+            ),
+            "noplaylist": True
+        }) as ydl:
+
+            info = ydl.extract_info(
+                url,
+                download=True
+            )
+
+        source = find_file(
+            DOWNLOAD_DIR,
+            job_id
+        )
+
+        output = DOWNLOAD_DIR / (
+            f"{make_filename(info)}"
+            f"{source.suffix}"
+        )
+
+        if output != source:
+            if output.exists():
+                remove_path(output)
+
+            source.rename(
+                output
+            )
+
+        return output
+
+    except Exception:
+        cleanup_job_files(
+            job_id
         )
         raise
 
 
-def download_voice_one(
+def download_voice(
     url,
-    job_directory
+    job_id
 ):
-    source_file, info = download_file(
-        url,
-        job_directory,
-        "bestaudio/best"
+    source_dir = (
+        DOWNLOAD_DIR
+        / "voice_source"
     )
 
-    final_path = os.path.join(
-        job_directory,
-        build_filename(
-            info,
-            "ogg"
-        )
+    source_dir.mkdir(
+        parents=True,
+        exist_ok=True
     )
 
-    subprocess.run(
-        [
-            "ffmpeg",
-            "-y",
-            "-i",
-            source_file,
-            "-vn",
-            "-c:a",
-            "libopus",
-            final_path
-        ],
-        check=True
-    )
-
-    if (
-        os.path.abspath(source_file)
-        != os.path.abspath(final_path)
-    ):
-        cleanup_path(
-            source_file
-        )
-
-    return final_path
-
-
-def download_voice(url):
-    job_directory = create_job_directory()
+    source = None
+    output = None
 
     try:
-        info = get_media_info(
-            url
+        with yt_dlp.YoutubeDL({
+            "format": "bestaudio/best",
+            "outtmpl": str(
+                source_dir
+                / f"{job_id}.%(ext)s"
+            ),
+            "noplaylist": True
+        }) as ydl:
+
+            info = ydl.extract_info(
+                url,
+                download=True
+            )
+
+        source = find_file(
+            source_dir,
+            job_id
         )
 
-        entries = get_entries(
-            info
+        output = DOWNLOAD_DIR / (
+            f"{make_filename(info)}.ogg"
         )
 
-        file_paths = []
-
-        for entry in entries:
-            entry_url = get_entry_url(
-                entry
-            )
-
-            if not entry_url:
-                continue
-
-            file_path = download_voice_one(
-                entry_url,
-                job_directory
-            )
-
-            file_paths.append(
-                file_path
-            )
-
-        if not file_paths:
-            raise FileNotFoundError(
-                "No downloadable audio files were found"
-            )
-
-        return (
-            job_directory,
-            file_paths
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-y",
+                "-i",
+                str(source),
+                "-vn",
+                "-c:a",
+                "libopus",
+                str(output)
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=True
         )
+
+        return output
 
     except Exception:
-        cleanup_path(
-            job_directory
+        remove_path(output)
+
+        cleanup_job_files(
+            job_id
         )
+
         raise
 
+    finally:
+        remove_path(source)
 
-def parse_duration_part(value):
-    value = value.strip()
-
-    if re.fullmatch(
-        r"\d+",
-        value
-    ):
-        return float(value)
-
-    match = re.fullmatch(
-        r"(\d+):(\d+)(?:\.(\d+))?",
-        value
-    )
-
-    if match:
-        minutes = int(
-            match.group(1)
+        cleanup_job_files(
+            job_id
         )
 
-        seconds = int(
-            match.group(2)
-        )
 
-        fraction = match.group(3)
-
-        if seconds >= 60:
-            raise ValueError
-
-        if fraction:
-            fraction_value = int(
-                fraction
-            ) / (
-                10 ** len(fraction)
-            )
-        else:
-            fraction_value = 0
-
-        return (
-            minutes * 60
-            + seconds
-            + fraction_value
-        )
-
-    match = re.fullmatch(
-        r"(\d+)\.(\d+)",
-        value
-    )
-
-    if match:
-        hours = int(
-            match.group(1)
-        )
-
-        minutes = int(
-            match.group(2)
-        )
-
-        if hours > 23:
-            raise ValueError
-
-        if minutes >= 60:
-            raise ValueError
-
-        return (
-            hours * 3600
-            + minutes * 60
-        )
-
-    match = re.fullmatch(
-        r"(\d+)\.(\d+):(\d+)(?:\.(\d+))?",
-        value
-    )
-
-    if match:
-        hours = int(
-            match.group(1)
-        )
-
-        minutes = int(
-            match.group(2)
-        )
-
-        seconds = int(
-            match.group(3)
-        )
-
-        fraction = match.group(4)
-
-        if minutes >= 60:
-            raise ValueError
-
-        if seconds >= 60:
-            raise ValueError
-
-        if fraction:
-            fraction_value = int(
-                fraction
-            ) / (
-                10 ** len(fraction)
-            )
-        else:
-            fraction_value = 0
-
-        return (
-            hours * 3600
-            + minutes * 60
-            + seconds
-            + fraction_value
-        )
-
-    raise ValueError
-
-
-def parse_duration_range(value):
-    value = value.strip()
-
-    match = re.fullmatch(
-        r"(.+?)\s*(?:/|-)\s*(.+)",
-        value
-    )
-
-    if match:
-        start_text = match.group(1).strip()
-        end_text = match.group(2).strip()
-    else:
-        parts = value.split()
-
-        if len(parts) != 2:
-            raise ValueError
-
-        start_text = parts[0]
-        end_text = parts[1]
-
-    start = parse_duration_part(
-        start_text
-    )
-
-    end = parse_duration_part(
-        end_text
-    )
-
-    if start < 0:
-        raise ValueError
-
-    if end <= start:
-        raise ValueError
-
-    return start, end
-
-
-def get_media_duration(
+async def send_file(
+    bot,
+    chat_id,
+    mode,
     file_path
 ):
-    result = subprocess.run(
-        [
-            "ffprobe",
-            "-v",
-            "error",
-            "-show_entries",
-            "format=duration",
-            "-of",
-            "default=noprint_wrappers=1:nokey=1",
+    if mode == "voice":
+        sent = await bot.send_voice(
+            chat_id=chat_id,
+            voice=FSInputFile(
+                file_path
+            )
+        )
+
+        return sent.voice.file_id
+
+    sent = await bot.send_document(
+        chat_id=chat_id,
+        document=FSInputFile(
             file_path
-        ],
-        capture_output=True,
-        text=True,
-        check=True
+        )
     )
 
-    return float(
-        result.stdout.strip()
-    )
+    return sent.document.file_id
 
 
-def trim_voice(
-    source_file,
-    start,
-    end,
-    output_file
+async def send_cached_file(
+    bot,
+    chat_id,
+    mode,
+    file_id
 ):
-    subprocess.run(
-        [
-            "ffmpeg",
-            "-y",
-            "-i",
-            source_file,
-            "-ss",
-            str(start),
-            "-to",
-            str(end),
-            "-c:a",
-            "libopus",
-            output_file
-        ],
-        check=True
-    )
+    try:
+        if mode == "voice":
+            await bot.send_voice(
+                chat_id=chat_id,
+                voice=file_id
+            )
+        else:
+            await bot.send_document(
+                chat_id=chat_id,
+                document=file_id
+            )
 
-    return output_file
+        return True
+
+    except Exception:
+        return False
 
 
-def get_virtual(url):
-    return download_virtual(
-        url
-    )
-
-
-def get_voice(url):
-    return download_voice(
-        url
-    )
-
-
-def get_voice_edit_range(value):
-    return parse_duration_range(
-        value
-    )
-
-
-def get_voice_duration(
-    file_path
+async def process_job(
+    bot,
+    job,
+    get_cached_file,
+    set_cached_file,
+    delete_cached_file,
+    send_failed
 ):
-    return get_media_duration(
-        file_path
-    )
+    file_path = None
+
+    try:
+        chat_id = job["chat_id"]
+        url = job["url"]
+        mode = job["mode"]
+        job_id = job["job_id"]
+
+        cached = await get_cached_file(
+            mode,
+            url
+        )
+
+        if cached:
+            if await send_cached_file(
+                bot,
+                chat_id,
+                mode,
+                cached
+            ):
+                return
+
+            await delete_cached_file(
+                mode,
+                url
+            )
+
+        downloader = (
+            download_voice
+            if mode == "voice"
+            else download_normal
+        )
+
+        file_path = await asyncio.to_thread(
+            downloader,
+            url,
+            job_id
+        )
+
+        file_id = await send_file(
+            bot,
+            chat_id,
+            mode,
+            file_path
+        )
+
+        await set_cached_file(
+            mode,
+            url,
+            file_id
+        )
+
+    except asyncio.CancelledError:
+        raise
+
+    except Exception:
+        try:
+            await send_failed(
+                job["chat_id"]
+            )
+        except Exception:
+            pass
+
+    finally:
+        if job:
+            cleanup_job_files(
+                job.get("job_id")
+            )
+
+        remove_path(
+            file_path
+        )
+
+        file_path = None
+
+        if job:
+            job.clear()
+
+        job = None
 
 
-def edit_voice(
-    source_file,
-    start,
-    end,
-    output_file
+async def worker(
+    bot,
+    user_id,
+    pop_job,
+    get_cached_file,
+    set_cached_file,
+    delete_cached_file,
+    send_failed
 ):
-    return trim_voice(
-        source_file,
-        start,
-        end,
-        output_file
+    current_task = (
+        asyncio.current_task()
     )
+
+    try:
+        while True:
+            try:
+                job = await asyncio.wait_for(
+                    pop_job(user_id),
+                    timeout=WORKER_IDLE_TIMEOUT
+                )
+            except asyncio.TimeoutError:
+                return
+
+            if not job:
+                return
+
+            try:
+                await process_job(
+                    bot,
+                    job,
+                    get_cached_file,
+                    set_cached_file,
+                    delete_cached_file,
+                    send_failed
+                )
+            finally:
+                job = None
+
+    except asyncio.CancelledError:
+        raise
+
+    finally:
+        tasks = workers.get(
+            user_id
+        )
+
+        if (
+            tasks
+            and current_task in tasks
+        ):
+            tasks.discard(
+                current_task
+            )
+
+            if not tasks:
+                workers.pop(
+                    user_id,
+                    None
+                )
+
+
+def ensure_workers(
+    bot,
+    user_id,
+    pop_job,
+    get_cached_file,
+    set_cached_file,
+    delete_cached_file,
+    send_failed
+):
+    tasks = workers.get(
+        user_id
+    )
+
+    if tasks:
+        return
+
+    tasks = set()
+
+    workers[user_id] = tasks
+
+    for _ in range(
+        MAX_CONCURRENT_PER_USER
+    ):
+        task = asyncio.create_task(
+            worker(
+                bot,
+                user_id,
+                pop_job,
+                get_cached_file,
+                set_cached_file,
+                delete_cached_file,
+                send_failed
+            )
+        )
+
+        tasks.add(
+            task
+        )
+
+
+async def cleanup_old_files():
+    if not DOWNLOAD_DIR.exists():
+        return
+
+    for path in list(
+        DOWNLOAD_DIR.iterdir()
+    ):
+        remove_path(path)
