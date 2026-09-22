@@ -83,7 +83,13 @@ async def handle_mode_callback(query: CallbackQuery, bot: Bot):
         return
     
     thread_id = query.message.message_thread_id or 0
-    new_mode = query.data.split("_")[-1]
+    requested_mode = query.data.split("_")[-1]
+    current_mode = await get_chat_mode(query.message.chat.id, thread_id)
+    
+    if requested_mode == current_mode:
+        new_mode = "voice" if current_mode == "normal" else "normal"
+    else:
+        new_mode = requested_mode
     
     await set_chat_mode(query.message.chat.id, thread_id, new_mode)
     

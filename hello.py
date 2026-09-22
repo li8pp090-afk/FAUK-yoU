@@ -202,6 +202,7 @@ async def process_audio_url(message: Message, url: str):
 @dp.message(F.text)
 async def handle_message(message: Message):
     text = message.text.strip()
+    
     if text == CMD_EDIT:
         return
 
