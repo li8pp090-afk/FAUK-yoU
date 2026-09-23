@@ -11,11 +11,15 @@ from yTFMe import download_with_ytdlp, convert_to_opus_ogg, merge_best_quality
 from NAMe import process_downloaded_filenames
 from bToN import handle_edit_command, handle_mode_callback, get_rotating_message_keyboard, extract_thread_id
 from Reply import CMD_EDIT, TRIGGER_BOT_KEYWORD, TXT_START_DOWNLOAD, TXT_DOWNLOAD_FAILED, TXT_TAKEOFF, ROTATING_MESSAGES
+from ediT import router as edit_router
+from AUdio import router as audio_router
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
+dp.include_router(edit_router)
+dp.include_router(audio_router)
 
 class UserStateManager:
     def __init__(self):
@@ -101,17 +105,34 @@ async def process_audio_url(message: Message, url: str):
             
             if cached_file_id:
                 file_ids = cached_file_id.split(",")
+                reply_id = None if delete_links else message.message_id
                 if mode == "voice":
                     for fid in file_ids:
-                        await bot.send_voice(chat_id=message.chat.id, message_thread_id=message.message_thread_id, voice=fid)
+                        await bot.send_voice(
+                            chat_id=message.chat.id,
+                            message_thread_id=message.message_thread_id,
+                            voice=fid,
+                            reply_to_message_id=reply_id
+                        )
                 else:
                     for i in range(0, len(file_ids), 10):
                         chunk = file_ids[i:i+10]
                         media_group = [InputMediaDocument(media=fid) for fid in chunk]
-                        await bot.send_media_group(chat_id=message.chat.id, message_thread_id=message.message_thread_id, media=media_group)
+                        await bot.send_media_group(
+                            chat_id=message.chat.id,
+                            message_thread_id=message.message_thread_id,
+                            media=media_group,
+                            reply_to_message_id=reply_id
+                        )
                 return
 
-            status_msg = await bot.send_message(chat_id=message.chat.id, message_thread_id=message.message_thread_id, text=TXT_START_DOWNLOAD)
+            reply_id = None if delete_links else message.message_id
+            status_msg = await bot.send_message(
+                chat_id=message.chat.id,
+                message_thread_id=message.message_thread_id,
+                text=TXT_START_DOWNLOAD,
+                reply_to_message_id=reply_id
+            )
 
             tmp_dir = tempfile.mkdtemp()
             
@@ -142,7 +163,12 @@ async def process_audio_url(message: Message, url: str):
                     processed_path = await convert_to_opus_ogg(downloaded_file, tmp_dir)
                     if processed_path and os.path.exists(processed_path):
                         processed_files.append(processed_path)
-                        sent_msg = await bot.send_voice(chat_id=message.chat.id, message_thread_id=message.message_thread_id, voice=FSInputFile(processed_path))
+                        sent_msg = await bot.send_voice(
+                            chat_id=message.chat.id,
+                            message_thread_id=message.message_thread_id,
+                            voice=FSInputFile(processed_path),
+                            reply_to_message_id=reply_id
+                        )
                         if sent_msg and sent_msg.voice:
                             saved_file_ids.append(sent_msg.voice.file_id)
             else:
@@ -157,7 +183,12 @@ async def process_audio_url(message: Message, url: str):
                     chunk = processed_files[i:i+10]
                     media_group = [InputMediaDocument(media=FSInputFile(f)) for f in chunk]
                     
-                    sent_messages = await bot.send_media_group(chat_id=message.chat.id, message_thread_id=message.message_thread_id, media=media_group)
+                    sent_messages = await bot.send_media_group(
+                        chat_id=message.chat.id,
+                        message_thread_id=message.message_thread_id,
+                        media=media_group,
+                        reply_to_message_id=reply_id
+                    )
                     for msg in sent_messages:
                         if msg.document:
                             saved_file_ids.append(msg.document.file_id)

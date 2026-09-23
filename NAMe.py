@@ -1,5 +1,6 @@
 import os
 import re
+import mimetypes
 
 UPPER_TARGETS = set("ATFGUJNML")
 
@@ -23,6 +24,14 @@ def clean_filename_part(text: str) -> str:
     cleaned = custom_case_transform(cleaned)
     return cleaned.strip()
 
+def get_extension_from_mimetype(file_path: str, fallback_ext: str) -> str:
+    mime_type, _ = mimetypes.guess_type(file_path)
+    if mime_type:
+        ext = mimetypes.guess_extension(mime_type)
+        if ext:
+            return ext.lower()
+    return fallback_ext.lower()
+
 def process_downloaded_filenames(tmp_dir: str) -> list[str]:
     raw_files = sorted([
         f for f in os.listdir(tmp_dir)
@@ -41,8 +50,8 @@ def process_downloaded_filenames(tmp_dir: str) -> list[str]:
         if not cleaned_name:
             cleaned_name = custom_case_transform("audio")
         
-        ext_transformed = custom_case_transform(ext)
-        new_file_name = f"{cleaned_name}{ext_transformed}"
+        real_ext = get_extension_from_mimetype(old_path, ext)
+        new_file_name = f"{cleaned_name}{real_ext}"
         new_path = os.path.join(tmp_dir, new_file_name)
         
         os.rename(old_path, new_path)

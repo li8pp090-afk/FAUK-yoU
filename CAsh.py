@@ -12,6 +12,12 @@ async def init_db():
             )
         """)
         await db.execute("""
+            CREATE TABLE IF NOT EXISTS extract_cache (
+                input_file_id TEXT PRIMARY KEY,
+                voice_file_id TEXT NOT NULL
+            )
+        """)
+        await db.execute("""
             CREATE TABLE IF NOT EXISTS chat_settings (
                 chat_id INTEGER,
                 thread_id INTEGER DEFAULT 0,
@@ -35,6 +41,17 @@ async def get_cached_file_id(url_key: str) -> str:
 async def save_file_id(url_key: str, file_id: str):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("INSERT OR REPLACE INTO file_cache (url_key, file_id) VALUES (?, ?)", (url_key, file_id))
+        await db.commit()
+
+async def get_extracted_voice_id(input_file_id: str) -> str:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT voice_file_id FROM extract_cache WHERE input_file_id = ?", (input_file_id,)) as cursor:
+            row = await cursor.fetchone()
+            return row[0] if row else None
+
+async def save_extracted_voice_id(input_file_id: str, voice_file_id: str):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("INSERT OR REPLACE INTO extract_cache (input_file_id, voice_file_id) VALUES (?, ?)", (input_file_id, voice_file_id))
         await db.commit()
 
 async def get_chat_settings(chat_id: int, thread_id: int = 0) -> tuple[str, bool]:

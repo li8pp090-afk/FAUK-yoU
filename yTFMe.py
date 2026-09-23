@@ -5,7 +5,7 @@ import tempfile
 async def download_with_ytdlp(url: str, tmp_dir: str, mode: str) -> bool:
     output_template = os.path.join(
         tmp_dir, 
-        "%(playlist_index)s_%(uploader,channel,creator)s - %(title)s.%(ext)s"
+        "%(uploader,channel,creator)s - %(title)s.%(ext)s"
     )
 
     if mode == "voice":
