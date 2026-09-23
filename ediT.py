@@ -11,59 +11,47 @@ router = Router()
 
 user_edit_states = {}
 
+def parse_micro(sub_str: str) -> float:
+    if not sub_str:
+        return 0.0
+    val = int(sub_str)
+    length = len(sub_str)
+    return val / (10 ** length)
+
 def parse_time_segment(time_str: str) -> float | None:
     time_str = time_str.strip()
-    
-    match_hours = re.match(r'^(\d+)\.(\d+):(\d+)(?:\.(\d+))?$', time_str)
+
+    hours_pattern = r'^(\d+)\.(\d{1,2}):(\d{1,2})(?:\.(\d+))?$'
+    match_hours = re.match(hours_pattern, time_str)
     if match_hours:
         hours = int(match_hours.group(1))
         minutes = int(match_hours.group(2))
         seconds = int(match_hours.group(3))
-        sub_sec_raw = match_hours.group(4)
-        
+        micro_str = match_hours.group(4)
+
         if minutes >= 60 or seconds >= 60:
             return None
-            
-        sub_seconds = 0.0
-        if sub_sec_raw:
-            val = int(sub_sec_raw)
-            if val >= 60:
-                return None
-            sub_seconds = val / 60.0
-            
-        return hours * 3600 + minutes * 60 + seconds + sub_seconds
 
-    match_minutes = re.match(r'^(\d+):(\d+)(?:\.(\d+))?$', time_str)
-    if match_minutes:
-        minutes = int(match_minutes.group(1))
-        seconds = int(match_minutes.group(2))
-        sub_sec_raw = match_minutes.group(3)
-        
+        return hours * 3600 + minutes * 60 + seconds + parse_micro(micro_str)
+
+    sec_zero_pattern = r'^(?:0:)?(0\d|\d{2,})(?:\.(\d+))?$'
+    match_sec_zero = re.match(sec_zero_pattern, time_str)
+    if match_sec_zero:
+        seconds = int(match_sec_zero.group(1))
+        micro_str = match_sec_zero.group(2)
+        return seconds + parse_micro(micro_str)
+
+    min_sec_pattern = r'^(\d+):(\d{1,2})(?:\.(\d+))?$'
+    match_min_sec = re.match(min_sec_pattern, time_str)
+    if match_min_sec:
+        minutes = int(match_min_sec.group(1))
+        seconds = int(match_min_sec.group(2))
+        micro_str = match_min_sec.group(3)
+
         if seconds >= 60:
             return None
-            
-        sub_seconds = 0.0
-        if sub_sec_raw:
-            val = int(sub_sec_raw)
-            if val >= 60:
-                return None
-            sub_seconds = val / 60.0
-            
-        return minutes * 60 + seconds + sub_seconds
 
-    match_seconds_only = re.match(r'^(\d+)(?:\.(\d+))?$', time_str)
-    if match_seconds_only:
-        seconds = int(match_seconds_only.group(1))
-        sub_sec_raw = match_seconds_only.group(2)
-        
-        sub_seconds = 0.0
-        if sub_sec_raw:
-            val = int(sub_sec_raw)
-            if val >= 60:
-                return None
-            sub_seconds = val / 60.0
-            
-        return seconds + sub_seconds
+        return minutes * 60 + seconds + parse_micro(micro_str)
 
     return None
 
@@ -73,19 +61,19 @@ def parse_time_range(text: str) -> tuple[float, float] | None:
     match = re.match(pattern, text)
     if not match:
         return None
-    
+
     start_raw = match.group(1)
     end_raw = match.group(2)
-    
+
     start_sec = parse_time_segment(start_raw)
     end_sec = parse_time_segment(end_raw)
-    
+
     if start_sec is None or end_sec is None:
         return None
-    
+
     if start_sec >= end_sec:
         return None
-        
+
     return start_sec, end_sec
 
 async def get_audio_duration(file_path: str) -> float:
@@ -136,7 +124,7 @@ async def start_edit_mode(message: Message, bot: Bot):
         return
 
     user_id = message.from_user.id
-    
+
     user_edit_states[user_id] = {
         "file_id": voice.file_id,
         "chat_id": message.chat.id,
@@ -170,7 +158,7 @@ async def process_edit_input(message: Message, bot: Bot):
     thread_id = state["message_thread_id"]
 
     file_info = await bot.get_file(file_id)
-    
+
     download_path = f"temp_edit_{user_id}_{file_id[:10]}.ogg"
     trimmed_path = f"temp_trimmed_{user_id}_{file_id[:10]}.ogg"
     final_opus_path = None
@@ -178,7 +166,7 @@ async def process_edit_input(message: Message, bot: Bot):
     try:
         await bot.download_file(file_info.file_path, download_path)
         total_duration = await get_audio_duration(download_path)
-        
+
         if end_sec > total_duration:
             state["attempts"] += 1
             await message.reply(TXT_AUDIO_DURATION_TOO_LONG)
@@ -188,11 +176,11 @@ async def process_edit_input(message: Message, bot: Bot):
 
         duration_to_cut = end_sec - start_sec
         success = await trim_audio_with_ffmpeg(download_path, trimmed_path, start_sec, duration_to_cut)
-        
+
         if success:
             final_opus_path = await convert_to_opus_ogg(trimmed_path, os.getcwd())
             target_path = final_opus_path if final_opus_path else trimmed_path
-            
+
             await bot.send_voice(
                 chat_id=chat_id,
                 message_thread_id=thread_id,

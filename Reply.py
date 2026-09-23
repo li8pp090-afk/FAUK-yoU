@@ -26,3 +26,5 @@ TXT_AUDIO_DURATION_TOO_LONG = "مدة هذه الصوتيه اصغر من الم
 
 CMD_EXTRACT_AUDIO = "بدء"
 TXT_AUDIO_EXTRACTION_FAILED = "لم يتم العثور ع صوت بهذا الملف / الفيديو\nالمعذرة"
+
+FALLBACK_AUDIO_NAME = "صوت"

@@ -1,6 +1,7 @@
 import os
 import re
 import mimetypes
+from Reply import FALLBACK_AUDIO_NAME
 
 UPPER_TARGETS = set("ATFGUJNML")
 
@@ -48,7 +49,7 @@ def process_downloaded_filenames(tmp_dir: str) -> list[str]:
         
         cleaned_name = clean_filename_part(name_without_ext)
         if not cleaned_name:
-            cleaned_name = custom_case_transform("audio")
+            cleaned_name = custom_case_transform(FALLBACK_AUDIO_NAME)
         
         real_ext = get_extension_from_mimetype(old_path, ext)
         new_file_name = f"{cleaned_name}{real_ext}"

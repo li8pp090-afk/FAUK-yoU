@@ -10,8 +10,8 @@ from CAsh import init_db, get_cached_file_id, save_file_id, get_chat_settings
 from yTFMe import download_with_ytdlp, convert_to_opus_ogg, merge_best_quality
 from NAMe import process_downloaded_filenames
 from bToN import handle_edit_command, handle_mode_callback, get_rotating_message_keyboard, extract_thread_id
-from Reply import CMD_EDIT, TRIGGER_BOT_KEYWORD, TXT_START_DOWNLOAD, TXT_DOWNLOAD_FAILED, TXT_TAKEOFF, ROTATING_MESSAGES
-from ediT import router as edit_router
+from Reply import CMD_EDIT, TRIGGER_BOT_KEYWORD, TXT_START_DOWNLOAD, TXT_DOWNLOAD_FAILED, TXT_TAKEOFF, ROTATING_MESSAGES, CMD_AUDIO_EDIT, CMD_EXTRACT_AUDIO
+from ediT import router as edit_router, user_edit_states
 from AUdio import router as audio_router
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -238,9 +238,14 @@ async def process_audio_url(message: Message, url: str):
 
 @dp.message(F.text)
 async def handle_message(message: Message):
+    user_id = message.from_user.id
+
+    if user_id in user_edit_states:
+        return
+
     text = message.text.strip()
     
-    if text == CMD_EDIT:
+    if text in [CMD_EDIT, CMD_AUDIO_EDIT, CMD_EXTRACT_AUDIO]:
         return
 
     if TELEGRAM_URL_PATTERN.search(text):
@@ -257,7 +262,6 @@ async def handle_message(message: Message):
         if text != TRIGGER_BOT_KEYWORD:
             return
 
-    user_id = message.from_user.id
     reply_text = await user_manager.get_next_rotating_message(user_id)
     keyboard = get_rotating_message_keyboard(user_id)
     await message.reply(reply_text, reply_markup=keyboard)
