@@ -96,38 +96,65 @@ async def download(
 
             files = [
                 path
-                for path in Path(
-                    directory
-                ).iterdir()
+                for path in Path(directory).iterdir()
                 if path.is_file()
             ]
 
             result = []
 
             for entry in entries:
-                entry_id = entry.get("id")
+                requested = entry.get(
+                    "requested_downloads"
+                ) or []
 
-                if not entry_id:
+                downloaded_path = None
+
+                for item in requested:
+                    filepath = item.get(
+                        "filepath"
+                    )
+
+                    if filepath:
+                        path = Path(filepath)
+
+                        if path.is_file():
+                            downloaded_path = path
+                            break
+
+                if not downloaded_path:
+                    filepath = entry.get(
+                        "filepath"
+                    )
+
+                    if filepath:
+                        path = Path(filepath)
+
+                        if path.is_file():
+                            downloaded_path = path
+
+                if not downloaded_path:
+                    entry_id = entry.get("id")
+
+                    candidates = [
+                        path
+                        for path in files
+                        if entry_id
+                        and entry_id in path.stem
+                    ]
+
+                    if candidates:
+                        downloaded_path = max(
+                            candidates,
+                            key=lambda item:
+                            item.stat().st_size
+                        )
+
+                if not downloaded_path:
                     continue
-
-                candidates = [
-                    path
-                    for path in files
-                    if entry_id in path.stem
-                ]
-
-                if not candidates:
-                    continue
-
-                path = max(
-                    candidates,
-                    key=lambda item:
-                    item.stat().st_size
-                )
 
                 entry[
                     "_downloaded_path"
-                ] = path
+                ] = downloaded_path
 
                 result.append(
                     entry
