@@ -1,85 +1,191 @@
-import os
 import aiosqlite
 
-DB_PATH = os.getenv("DB_PATH", "cache.db")
+
+DB_PATH = "bot.db"
+db = None
+
 
 async def init_db():
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS file_cache (
-                url_key TEXT PRIMARY KEY,
-                file_id TEXT NOT NULL
-            )
-        """)
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS extract_cache (
-                input_file_id TEXT PRIMARY KEY,
-                voice_file_id TEXT NOT NULL
-            )
-        """)
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS chat_settings (
-                chat_id INTEGER,
-                thread_id INTEGER DEFAULT 0,
-                mode TEXT DEFAULT 'normal',
-                delete_links INTEGER DEFAULT 0,
-                PRIMARY KEY (chat_id, thread_id)
-            )
-        """)
-        try:
-            await db.execute("ALTER TABLE chat_settings ADD COLUMN delete_links INTEGER DEFAULT 0")
-        except Exception:
-            pass
-        await db.commit()
+    global db
 
-async def get_cached_file_id(url_key: str) -> str:
-    async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute("SELECT file_id FROM file_cache WHERE url_key = ?", (url_key,)) as cursor:
-            row = await cursor.fetchone()
-            return row[0] if row else None
+    db = await aiosqlite.connect(
+        DB_PATH
+    )
 
-async def save_file_id(url_key: str, file_id: str):
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("INSERT OR REPLACE INTO file_cache (url_key, file_id) VALUES (?, ?)", (url_key, file_id))
-        await db.commit()
-
-async def get_extracted_voice_id(input_file_id: str) -> str:
-    async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute("SELECT voice_file_id FROM extract_cache WHERE input_file_id = ?", (input_file_id,)) as cursor:
-            row = await cursor.fetchone()
-            return row[0] if row else None
-
-async def save_extracted_voice_id(input_file_id: str, voice_file_id: str):
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("INSERT OR REPLACE INTO extract_cache (input_file_id, voice_file_id) VALUES (?, ?)", (input_file_id, voice_file_id))
-        await db.commit()
-
-async def get_chat_settings(chat_id: int, thread_id: int = 0) -> tuple[str, bool]:
-    async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute("SELECT mode, delete_links FROM chat_settings WHERE chat_id = ? AND thread_id = ?", (chat_id, thread_id)) as cursor:
-            row = await cursor.fetchone()
-            if row:
-                return row[0], bool(row[1])
-            return "normal", False
-
-async def set_chat_mode(chat_id: int, thread_id: int, mode: str):
-    async with aiosqlite.connect(DB_PATH) as db:
-        _, delete_links = await get_chat_settings(chat_id, thread_id)
-        await db.execute(
-            "INSERT OR REPLACE INTO chat_settings (chat_id, thread_id, mode, delete_links) VALUES (?, ?, ?, ?)",
-            (chat_id, thread_id, mode, 1 if delete_links else 0)
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            user_id INTEGER PRIMARY KEY,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
-        await db.commit()
+    """)
 
-async def toggle_delete_links_setting(chat_id: int, thread_id: int) -> bool:
-    async with aiosqlite.connect(DB_PATH) as db:
-        mode, current_delete_links = await get_chat_settings(chat_id, thread_id)
-        new_status = not current_delete_links
-        new_status_int = 1 if new_status else 0
-        
-        await db.execute(
-            "INSERT OR REPLACE INTO chat_settings (chat_id, thread_id, mode, delete_links) VALUES (?, ?, ?, ?)",
-            (chat_id, thread_id, mode, new_status_int)
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS tasks (
+            task_id TEXT PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            status TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
-        await db.commit()
-        return new_status
+    """)
+
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS file_ids (
+            file_key TEXT PRIMARY KEY,
+            file_id TEXT NOT NULL,
+            file_unique_id TEXT,
+            filename TEXT
+        )
+    """)
+
+    await db.commit()
+
+
+async def close_db():
+    global db
+
+    if db:
+        await db.close()
+        db = None
+
+
+async def recover_stale_tasks():
+    await db.execute("""
+        UPDATE tasks
+        SET status = 'abandoned'
+        WHERE status IN (
+            'queued',
+            'active',
+            'downloading',
+            'sending'
+        )
+    """)
+
+    await db.commit()
+
+
+async def add_user(user_id):
+    await db.execute(
+        """
+        INSERT OR IGNORE INTO users (
+            user_id
+        )
+        VALUES (?)
+        """,
+        (user_id,)
+    )
+
+    await db.commit()
+
+
+async def add_task(
+    task_id,
+    user_id,
+    status
+):
+    await db.execute(
+        """
+        INSERT INTO tasks (
+            task_id,
+            user_id,
+            status
+        )
+        VALUES (?, ?, ?)
+        """,
+        (
+            task_id,
+            user_id,
+            status
+        )
+    )
+
+    await db.commit()
+
+
+async def update_task(
+    task_id,
+    status
+):
+    await db.execute(
+        """
+        UPDATE tasks
+        SET status = ?
+        WHERE task_id = ?
+        """,
+        (
+            status,
+            task_id
+        )
+    )
+
+    await db.commit()
+
+
+async def delete_task(task_id):
+    await db.execute(
+        """
+        DELETE FROM tasks
+        WHERE task_id = ?
+        """,
+        (task_id,)
+    )
+
+    await db.commit()
+
+
+async def save_file_id(
+    file_key,
+    file_id,
+    file_unique_id,
+    filename
+):
+    await db.execute(
+        """
+        INSERT OR REPLACE INTO file_ids (
+            file_key,
+            file_id,
+            file_unique_id,
+            filename
+        )
+        VALUES (?, ?, ?, ?)
+        """,
+        (
+            file_key,
+            file_id,
+            file_unique_id,
+            filename
+        )
+    )
+
+    await db.commit()
+
+
+async def get_file_id(file_key):
+    cursor = await db.execute(
+        """
+        SELECT
+            file_id,
+            file_unique_id,
+            filename
+        FROM file_ids
+        WHERE file_key = ?
+        """,
+        (file_key,)
+    )
+
+    row = await cursor.fetchone()
+
+    await cursor.close()
+
+    return row
+
+
+async def delete_file_id(file_key):
+    await db.execute(
+        """
+        DELETE FROM file_ids
+        WHERE file_key = ?
+        """,
+        (file_key,)
+    )
+
+    await db.commit()

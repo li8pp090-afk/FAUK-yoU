@@ -1,3 +1,6 @@
 aiogram
 yt-dlp
 aiosqlite
+aiofiles
+aiohttp
+aiodns
