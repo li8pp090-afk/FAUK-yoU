@@ -1,6 +1,6 @@
 from aiogram import Router
 from aiogram.enums import ButtonStyle
-from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 import Order
 import Reply
@@ -26,55 +26,41 @@ def get_next_id():
     if not ids:
         return None
 
-    value = ids[ID_INDEX]
+    developer_id = ids[ID_INDEX]
 
     ID_INDEX = (
         ID_INDEX + 1
     ) % len(ids)
 
-    return value
+    return developer_id
 
 
 def get_next_color():
     global COLOR_INDEX
 
-    value = COLORS[COLOR_INDEX]
+    color = COLORS[COLOR_INDEX]
 
     COLOR_INDEX = (
         COLOR_INDEX + 1
     ) % len(COLORS)
 
-    return value
+    return color
 
 
 def get_markup():
+    developer_id = get_next_id()
+
+    if not developer_id:
+        return None
+
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
                     text=Reply.DEVELOPER_BUTTON,
-                    callback_data="developer",
+                    url=f"tg://user?id={developer_id}",
                     style=get_next_color()
                 )
             ]
         ]
-    )
-
-
-@router.callback_query(
-    lambda callback:
-    callback.data == "developer"
-)
-async def developer_callback(
-    callback: CallbackQuery
-):
-    developer_id = get_next_id()
-
-    if developer_id is None:
-        await callback.answer()
-        return
-
-    await callback.answer(
-        str(developer_id),
-        show_alert=True
     )
