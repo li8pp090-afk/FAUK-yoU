@@ -1,327 +1,915 @@
 import asyncio
-import datetime
-import json
 import os
+import random
 import re
-import shutil
 import sqlite3
-import subprocess
+from pathlib import Path
 
-from aiogram import Bot, Dispatcher, F
-from aiogram.enums import ButtonStyle, ChatType
-from aiogram.types import (
-    CallbackQuery,
-    FSInputFile,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
-    InputMediaDocument,
-    Message,
-    ReactionTypeEmoji,
+from aiogram import Bot
+from aiogram import Dispatcher
+from aiogram import F
+from aiogram.enums import ChatType
+from aiogram.types import FSInputFile
+from aiogram.types import ReactionTypeEmoji
+
+import Reply
+import bToN
+import CAsh
+import NAMe
+import yTFMe
+
+
+DEVELOPER_IDS_ENV = "boT_TAkeoFF"
+BOT_TOKEN_ENV = "BOT_TOKEN"
+DATABASE_PATH = "bot.db"
+DOWNLOAD_DIRECTORY = "downloads"
+DEFAULT_MODE = "normal"
+MAX_MEDIA_GROUP_SIZE = 8
+
+URL_PATTERN = re.compile(
+    r"https?://\S+",
+    re.IGNORECASE,
 )
 
-from bToN import DeveloperButtonRotator, UserReactionManager, get_edit_keyboard
-from CAsh import get_cached_file, get_mode, init_db, save_cached_file, set_mode
-from NAMe import DownloadQueueManager, generate_file_name, is_url
-from Reply import (
-    BTN_NORMAL_LABEL,
-    BTN_VOICE_LABEL,
-    CMD_BOT,
-    CMD_EDIT,
-    DEV_BUTTON_NAMES,
-    REACTION_DELAYS,
-    REACTION_EMOJIS,
-    TXT_DOWNLOAD_FAILED,
-    TXT_EDIT_MENU,
-    TXT_NOT_ALLOWED,
-    TXT_START_DOWNLOAD,
-    TXT_TAKEOFF,
-    USER_BOT_RESPONSES,
-)
-from yTFMe import execute_media_download
 
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
-BOT_TAKEOFF = os.environ.get("boT_TAkeoFF", "")
+class DeveloperCycle:
+    def __init__(self, developer_ids):
+        self.developer_ids = developer_ids
+        self.id_index = 0
+        self.name_index = 0
+        self.style_index = 0
+        self.lock = asyncio.Lock()
 
-queue_manager = DownloadQueueManager(asyncio=asyncio, max_concurrent=3, max_waiting=3)
-user_rotation_state = {}
-user_typing_pattern_state = {}
-reaction_manager = UserReactionManager(emojis=REACTION_EMOJIS, delays=REACTION_DELAYS)
-dev_rotator = DeveloperButtonRotator(dev_names=DEV_BUTTON_NAMES)
+    async def next(self):
+        async with self.lock:
+            if not self.developer_ids:
+                return None
 
+            result = (
+                self.developer_ids[self.id_index],
+                Reply.DEVELOPER_NAMES[
+                    self.name_index
+                ],
+                bToN.DEVELOPER_STYLES[
+                    self.style_index
+                ],
+            )
 
-def get_context_key(message: Message) -> str:
-    if message.chat.type == ChatType.PRIVATE:
-        return f"user_{message.from_user.id}"
+            self.id_index = (
+                self.id_index + 1
+            ) % len(self.developer_ids)
 
-    thread_id = getattr(message, "message_thread_id", None)
-    if thread_id:
-        return f"thread_{message.chat.id}_{thread_id}"
+            self.name_index = (
+                self.name_index + 1
+            ) % len(Reply.DEVELOPER_NAMES)
 
-    return f"chat_{message.chat.id}"
+            self.style_index = (
+                self.style_index + 1
+            ) % len(bToN.DEVELOPER_STYLES)
+
+            return result
 
 
-def get_context_key_from_cb(cb: CallbackQuery) -> str:
-    if cb.message.chat.type == ChatType.PRIVATE:
-        return f"user_{cb.from_user.id}"
+def load_developer_ids():
+    return [
+        int(item.strip())
+        for item in os.getenv(
+            DEVELOPER_IDS_ENV,
+            "",
+        ).split("/")
+        if item.strip()
+    ]
 
-    thread_id = getattr(cb.message, "message_thread_id", None)
-    if thread_id:
-        return f"thread_{cb.message.chat.id}_{thread_id}"
 
-    return f"chat_{cb.message.chat.id}"
+def get_database():
+    return sqlite3.connect(
+        DATABASE_PATH,
+        check_same_thread=False,
+    )
 
 
-async def trigger_message_reaction(bot_inst: Bot, chat_id: int, message_id: int, user_id: int):
+def developer_markup(developer):
+    if developer is None:
+        return None
+
+    return bToN.create_developer_markup(
+        *developer
+    )
+
+
+async def react(
+    bot,
+    message,
+    reaction_index,
+):
+    delay = Reply.REACTION_DELAYS[
+        reaction_index
+        % len(Reply.REACTION_DELAYS)
+    ]
+
+    await asyncio.sleep(delay)
+
+    emoji = Reply.REACTIONS[
+        reaction_index
+        % len(Reply.REACTIONS)
+    ]
+
     try:
-        delay = reaction_manager.get_next_delay(user_id)
-        await asyncio.sleep(delay)
-        emoji = reaction_manager.get_next_emoji(user_id)
-        await bot_inst.set_message_reaction(
-            chat_id=chat_id,
-            message_id=message_id,
-            reaction=[ReactionTypeEmoji(emoji=emoji)]
+        await bot.set_message_reaction(
+            chat_id=message.chat.id,
+            message_id=message.message_id,
+            reaction=[
+                ReactionTypeEmoji(
+                    emoji=emoji
+                )
+            ],
         )
     except Exception:
         pass
 
 
-async def send_animated_text(
-    message: Message,
-    full_text: str,
-    final_reply_markup=None,
-    bot_inst: Bot = None
+def schedule_reaction(
+    bot,
+    message,
+    reaction_index,
 ):
-    user_id = message.from_user.id
-    lines = full_text.split('\n')
-    current_lines = []
+    asyncio.create_task(
+        react(
+            bot,
+            message,
+            reaction_index,
+        )
+    )
 
-    pattern_toggle = user_typing_pattern_state.get(user_id, True)
-    sent_msg = None
 
-    for line in lines:
+async def animate(
+    message,
+    text,
+):
+    rendered = []
+
+    for line_index, line in enumerate(
+        text.split("\n")
+    ):
         words = line.split()
-        if not words:
-            current_lines.append("")
-            continue
 
-        line_accum = []
-        word_idx = 0
+        while len(rendered) <= line_index:
+            rendered.append("")
 
-        while word_idx < len(words):
-            if pattern_toggle:
-                step_sizes = [2, 4]
-            else:
-                step_sizes = [3, 6]
+        position = 0
+        pattern_index = 0
 
-            pattern_toggle = not pattern_toggle
+        while position < len(words):
+            minimum, maximum = Reply.TYPE_PATTERNS[
+                pattern_index
+                % len(Reply.TYPE_PATTERNS)
+            ]
 
-            for count in step_sizes:
-                if word_idx >= len(words):
-                    break
-
-                chunk = words[word_idx:word_idx + count]
-                word_idx += count
-                line_accum.extend(chunk)
-
-                current_displayed_line = " ".join(line_accum)
-                active_text = "\n".join(current_lines + [current_displayed_line])
-
-                if sent_msg is None:
-                    sent_msg = await message.reply(active_text)
-                    if bot_inst:
-                        asyncio.create_task(
-                            trigger_message_reaction(bot_inst, sent_msg.chat.id, sent_msg.message_id, user_id)
-                        )
-                else:
-                    try:
-                        await sent_msg.edit_text(active_text)
-                    except Exception:
-                        pass
-
-                await asyncio.sleep(0.3)
-
-        current_lines.append(" ".join(line_accum))
-
-    user_typing_pattern_state[user_id] = pattern_toggle
-
-    if sent_msg and final_reply_markup:
-        try:
-            await sent_msg.edit_reply_markup(reply_markup=final_reply_markup)
-        except Exception:
-            pass
-
-
-async def send_takeoff_message(bot_inst: Bot):
-    if not BOT_TAKEOFF:
-        return
-
-    targets = [t.strip() for t in BOT_TAKEOFF.split('/') if t.strip()]
-    for target in targets:
-        try:
-            target_id = int(target)
-            reply_markup = dev_rotator.build_dev_keyboard(
-                InlineKeyboardMarkup,
-                InlineKeyboardButton,
-                ButtonStyle,
-                BOT_TAKEOFF
+            amount = random.randint(
+                minimum,
+                maximum,
             )
-            sent_msg = await bot_inst.send_message(
-                chat_id=target_id,
-                text=TXT_TAKEOFF,
-                reply_markup=reply_markup
+
+            position = min(
+                position + amount,
+                len(words),
             )
-            if sent_msg:
-                asyncio.create_task(
-                    trigger_message_reaction(bot_inst, sent_msg.chat.id, sent_msg.message_id, target_id)
-                )
-        except Exception:
-            pass
+
+            rendered[line_index] = " ".join(
+                words[:position]
+            )
+
+            await message.edit_text(
+                "\n".join(rendered)
+            )
+
+            await asyncio.sleep(
+                Reply.TYPE_DELAY
+            )
+
+            pattern_index += 1
 
 
-bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher()
+async def animated_reply(
+    message,
+    text,
+    developers,
+    reaction_index,
+):
+    sent = await message.reply("")
+
+    await animate(
+        sent,
+        text,
+    )
+
+    developer = await developers.next()
+
+    if developer:
+        await sent.edit_reply_markup(
+            reply_markup=developer_markup(
+                developer
+            )
+        )
+
+    schedule_reaction(
+        message.bot,
+        sent,
+        reaction_index,
+    )
+
+    return sent
 
 
-async def is_admin(bot_inst: Bot, chat_id: int, user_id: int) -> bool:
-    try:
-        member = await bot_inst.get_chat_member(chat_id, user_id)
-        return member.status in ["administrator", "creator"]
-    except Exception:
+async def send_reply(
+    message,
+    text,
+    developers,
+    reaction_index,
+):
+    developer = await developers.next()
+
+    sent = await message.reply(
+        text,
+        reply_markup=developer_markup(
+            developer
+        ),
+    )
+
+    schedule_reaction(
+        message.bot,
+        sent,
+        reaction_index,
+    )
+
+    return sent
+
+
+async def authorized(message):
+    if message.chat.type == ChatType.PRIVATE:
+        return True
+
+    if message.chat.type not in (
+        ChatType.GROUP,
+        ChatType.SUPERGROUP,
+    ):
         return False
 
+    member = await message.bot.get_chat_member(
+        message.chat.id,
+        message.from_user.id,
+    )
 
-@dp.message(F.text.lower() == CMD_EDIT.lower())
-async def handle_edit_command(message: Message, bot_inst: Bot):
-    if message.chat.type in [ChatType.GROUP, ChatType.SUPERGROUP]:
-        if not await is_admin(bot_inst, message.chat.id, message.from_user.id):
+    return member.status in {
+        "creator",
+        "administrator",
+    }
+
+
+def get_mode(database, message):
+    return database.get_mode(
+        NAMe.get_mode_scope_key(message),
+        DEFAULT_MODE,
+    )
+
+
+def set_mode(
+    database,
+    message,
+    mode,
+):
+    database.set_mode(
+        NAMe.get_mode_scope_key(message),
+        mode,
+    )
+
+
+async def send_mode(
+    message,
+    database,
+    developers,
+    reaction_index,
+):
+    mode = get_mode(
+        database,
+        message,
+    )
+
+    sent = await message.reply("")
+
+    await animate(
+        sent,
+        Reply.MODE_TEXT,
+    )
+
+    developer = await developers.next()
+
+    if developer:
+        await sent.edit_reply_markup(
+            reply_markup=bToN.create_mode_markup(
+                mode,
+                *developer,
+            )
+        )
+
+    schedule_reaction(
+        message.bot,
+        sent,
+        reaction_index,
+    )
+
+
+def extract_url(message):
+    text = message.text or message.caption
+
+    if not text:
+        return None
+
+    match = URL_PATTERN.search(text)
+
+    if not match:
+        return None
+
+    url = match.group(0).rstrip(
+        ".,!?;:)]}"
+    )
+
+    if NAMe.is_telegram_link(url):
+        return None
+
+    return url
+
+
+def get_content_key(info):
+    extractor = (
+        info.get("extractor_key")
+        or info.get("extractor")
+        or ""
+    )
+
+    content_id = info.get("id")
+
+    if extractor and content_id:
+        return f"{extractor}:{content_id}"
+
+    return (
+        info.get("webpage_url")
+        or info.get("original_url")
+        or info.get("url")
+        or ""
+    )
+
+
+def get_cached_file(
+    database,
+    info,
+    mode,
+):
+    key = get_content_key(info)
+
+    if mode == "normal":
+        return database.get_normal_file(key)
+
+    return database.get_voice_file(key)
+
+
+def save_cached_file(
+    database,
+    info,
+    mode,
+    sent,
+    filename,
+):
+    key = get_content_key(info)
+
+    if mode == "normal":
+        if sent.document is None:
             return
 
-    key = get_context_key(message)
-    mode = get_mode(sqlite3, key)
-    keyboard = get_edit_keyboard(
-        InlineKeyboardMarkup,
-        InlineKeyboardButton,
-        ButtonStyle,
-        BTN_VOICE_LABEL,
-        BTN_NORMAL_LABEL,
-        mode
+        database.save_normal_file(
+            key,
+            sent.document.file_id,
+            sent.document.file_unique_id,
+            filename,
+        )
+        return
+
+    if sent.voice is None:
+        return
+
+    database.save_voice_file(
+        key,
+        sent.voice.file_id,
+        sent.voice.file_unique_id,
+        filename,
     )
 
-    await send_animated_text(
-        message=message,
-        full_text=TXT_EDIT_MENU,
-        final_reply_markup=keyboard,
-        bot_inst=bot_inst
+
+def get_output_template(
+    directory,
+    info,
+):
+    filename = NAMe.build_filename(info)
+
+    if not filename:
+        filename = str(
+            info.get("id") or "file"
+        )
+
+    return str(
+        Path(directory)
+        / f"{filename}.%(ext)s"
     )
 
 
-@dp.callback_query(F.data.in_({"toggle_voice", "toggle_normal"}))
-async def handle_edit_callback(cb: CallbackQuery, bot_inst: Bot):
-    if cb.message.chat.type in [ChatType.GROUP, ChatType.SUPERGROUP]:
-        if not await is_admin(bot_inst, cb.message.chat.id, cb.from_user.id):
-            await cb.answer(TXT_NOT_ALLOWED, show_alert=True)
-            return
-
-    key = get_context_key_from_cb(cb)
-    current_mode = get_mode(sqlite3, key)
-    new_mode = "normal" if current_mode == "voice" else "voice"
-
-    set_mode(sqlite3, key, new_mode)
-    new_keyboard = get_edit_keyboard(
-        InlineKeyboardMarkup,
-        InlineKeyboardButton,
-        ButtonStyle,
-        BTN_VOICE_LABEL,
-        BTN_NORMAL_LABEL,
-        new_mode
+async def download_item(
+    url,
+    directory,
+    info,
+    mode,
+):
+    template = get_output_template(
+        directory,
+        info,
     )
+
+    if mode == "normal":
+        result = await yTFMe.run_normal_download(
+            url,
+            template,
+        )
+
+        video = yTFMe.get_video_download(
+            result
+        )
+
+        audio = yTFMe.get_audio_download(
+            result
+        )
+
+        if video and audio:
+            video_path = yTFMe.get_download_path(
+                video
+            )
+
+            audio_path = yTFMe.get_download_path(
+                audio
+            )
+
+            if not video_path or not audio_path:
+                raise RuntimeError
+
+            merged_path = (
+                video_path.parent
+                / f".{video_path.name}.merged"
+            )
+
+            await yTFMe.run_merge(
+                video_path,
+                audio_path,
+                merged_path,
+                video,
+            )
+
+            os.replace(
+                merged_path,
+                video_path,
+            )
+
+            if audio_path.exists():
+                audio_path.unlink()
+
+            return video_path
+
+        if video:
+            return yTFMe.get_download_path(
+                video
+            )
+
+        raise RuntimeError
+
+    result = await yTFMe.run_voice_download(
+        url,
+        template,
+    )
+
+    audio = yTFMe.get_audio_download(
+        result
+    )
+
+    if not audio:
+        raise RuntimeError
+
+    audio_path = yTFMe.get_download_path(
+        audio
+    )
+
+    if not audio_path:
+        raise RuntimeError
+
+    output_path = (
+        audio_path.parent
+        / f".{audio_path.stem}.voice.ogg"
+    )
+
+    result_path = (
+        await yTFMe.run_voice_conversion(
+            audio_path,
+            output_path,
+        )
+    )
+
+    if audio_path.exists():
+        audio_path.unlink()
+
+    return result_path
+
+
+async def send_cached(
+    message,
+    file_id,
+    mode,
+):
+    if mode == "normal":
+        return await message.reply_document(
+            file_id
+        )
+
+    return await message.reply_voice(
+        file_id
+    )
+
+
+async def send_path(
+    message,
+    info,
+    path,
+    mode,
+    database,
+    reaction_index,
+):
+    if mode == "normal":
+        sent = await message.reply_document(
+            FSInputFile(path)
+        )
+    else:
+        sent = await message.reply_voice(
+            FSInputFile(path)
+        )
+
+    save_cached_file(
+        database,
+        info,
+        mode,
+        sent,
+        path.name,
+    )
+
+    schedule_reaction(
+        message.bot,
+        sent,
+        reaction_index,
+    )
+
+    return sent
+
+
+async def process_url(
+    message,
+    database,
+    developers,
+    queue,
+    reaction_state,
+):
+    url = extract_url(message)
+
+    if not url:
+        return
+
+    scope = NAMe.get_queue_scope_key(
+        message
+    )
+
+    reservation = await queue.reserve(scope)
+
+    if reservation is None:
+        return
 
     try:
-        await cb.message.edit_reply_markup(reply_markup=new_keyboard)
-    except Exception:
-        pass
+        if reservation == "waiting":
+            await queue.acquire_waiting(scope)
 
-    await cb.answer()
+        await send_reply(
+            message,
+            Reply.DOWNLOAD_START_TEXT,
+            developers,
+            reaction_state[0],
+        )
 
+        reaction_state[0] += 1
 
-async def process_media_request(message: Message, text: str):
-    key = get_context_key(message)
-    if not queue_manager.can_enqueue(key):
-        return
+        mode = get_mode(
+            database,
+            message,
+        )
 
-    if await queue_manager.acquire(key):
-        try:
-            await execute_media_download(
-                os, json, shutil, datetime, subprocess, asyncio, sqlite3,
-                FSInputFile, InputMediaDocument, message,
-                get_mode, get_cached_file, save_cached_file, generate_file_name,
-                TXT_START_DOWNLOAD, TXT_DOWNLOAD_FAILED, message, text, key, re,
-                dev_rotator, InlineKeyboardMarkup, InlineKeyboardButton, ButtonStyle,
-                BOT_TAKEOFF
+        directory = NAMe.create_download_directory(
+            DOWNLOAD_DIRECTORY,
+            message.from_user.id,
+        )
+
+        info = await asyncio.to_thread(
+            yTFMe.extract_info,
+            url,
+        )
+
+        entries = [
+            entry
+            for entry in info.get(
+                "entries",
+                [],
             )
-        finally:
-            queue_manager.release(key)
+            if entry
+        ]
+
+        if not entries:
+            entries = [info]
+
+        for batch_start in range(
+            0,
+            len(entries),
+            MAX_MEDIA_GROUP_SIZE,
+        ):
+            batch = entries[
+                batch_start:
+                batch_start + MAX_MEDIA_GROUP_SIZE
+            ]
+
+            for entry in batch:
+                cached = get_cached_file(
+                    database,
+                    entry,
+                    mode,
+                )
+
+                if cached:
+                    sent = await send_cached(
+                        message,
+                        cached[0],
+                        mode,
+                    )
+
+                    schedule_reaction(
+                        message.bot,
+                        sent,
+                        reaction_state[0],
+                    )
+
+                    reaction_state[0] += 1
+                    continue
+
+                entry_url = (
+                    entry.get("webpage_url")
+                    or entry.get("original_url")
+                    or url
+                )
+
+                path = await download_item(
+                    entry_url,
+                    directory,
+                    entry,
+                    mode,
+                )
+
+                if path is None:
+                    raise RuntimeError
+
+                await send_path(
+                    message,
+                    entry,
+                    path,
+                    mode,
+                    database,
+                    reaction_state[0],
+                )
+
+                reaction_state[0] += 1
+
+    except Exception:
+        await send_reply(
+            message,
+            Reply.DOWNLOAD_FAIL_TEXT,
+            developers,
+            reaction_state[0],
+        )
+
+        reaction_state[0] += 1
+
+    finally:
+        await queue.release(scope)
 
 
-def get_next_response(user_id: int) -> str:
-    current_index = user_rotation_state.get(user_id, 0)
-    response_text = USER_BOT_RESPONSES[current_index]
-    user_rotation_state[user_id] = (current_index + 1) % len(USER_BOT_RESPONSES)
-    return response_text
+async def handle_callback(
+    callback,
+    database,
+    developers,
+    reaction_state,
+):
+    message = callback.message
 
-
-@dp.message(F.chat.type == ChatType.PRIVATE, ~F.text.startswith("/"))
-async def handle_private_chat(message: Message, bot_inst: Bot):
-    if not message.text:
+    if message is None:
         return
 
-    text = message.text.strip()
-    if is_url(re, text):
-        await process_media_request(message, text)
-    else:
-        reply_markup = dev_rotator.build_dev_keyboard(
-            InlineKeyboardMarkup,
-            InlineKeyboardButton,
-            ButtonStyle,
-            BOT_TAKEOFF
+    if not await authorized(message):
+        await callback.answer(
+            Reply.UNAUTHORIZED_TEXT,
+            show_alert=True,
         )
-        response_text = get_next_response(message.from_user.id)
-        await send_animated_text(
-            message=message,
-            full_text=response_text,
-            final_reply_markup=reply_markup,
-            bot_inst=bot_inst
-        )
-
-
-@dp.message(F.chat.type.in_({ChatType.GROUP, ChatType.SUPERGROUP}))
-async def handle_group_chat(message: Message, bot_inst: Bot):
-    if not message.text:
         return
 
-    text = message.text.strip()
-    if is_url(re, text):
-        await process_media_request(message, text)
-    elif text.lower() == CMD_BOT.lower():
-        reply_markup = dev_rotator.build_dev_keyboard(
-            InlineKeyboardMarkup,
-            InlineKeyboardButton,
-            ButtonStyle,
-            BOT_TAKEOFF
+    current = get_mode(
+        database,
+        message,
+    )
+
+    requested = callback.data.split(
+        ":",
+        1,
+    )[1]
+
+    if requested == current:
+        requested = (
+            "voice"
+            if current == "normal"
+            else "normal"
         )
-        response_text = get_next_response(message.from_user.id)
-        await send_animated_text(
-            message=message,
-            full_text=response_text,
-            final_reply_markup=reply_markup,
-            bot_inst=bot_inst
+
+    set_mode(
+        database,
+        message,
+        requested,
+    )
+
+    await callback.answer()
+
+    developer = await developers.next()
+
+    await message.edit_reply_markup(
+        reply_markup=bToN.create_mode_markup(
+            requested,
+            *developer
+            if developer
+            else (
+                None,
+                None,
+                None,
+            ),
         )
+    )
+
+
+async def handle_message(
+    message,
+    database,
+    developers,
+    queue,
+    reaction_state,
+):
+    if message.from_user is None:
+        return
+
+    if message.text == Reply.MODE_EDIT:
+        if await authorized(message):
+            await send_mode(
+                message,
+                database,
+                developers,
+                reaction_state[0],
+            )
+
+            reaction_state[0] += 1
+
+        return
+
+    url = extract_url(message)
+
+    if url:
+        await process_url(
+            message,
+            database,
+            developers,
+            queue,
+            reaction_state,
+        )
+        return
+
+    if (
+        message.chat.type != ChatType.PRIVATE
+        and message.text != Reply.BOT_WORD
+    ):
+        return
+
+    scope = (
+        f"user:{message.from_user.id}"
+        if message.chat.type == ChatType.PRIVATE
+        else f"chat:{message.chat.id}"
+    )
+
+    index = database.next_reply_index(
+        scope,
+        len(Reply.ROTATING_REPLIES),
+    )
+
+    await animated_reply(
+        message,
+        Reply.ROTATING_REPLIES[index],
+        developers,
+        reaction_state[0],
+    )
+
+    reaction_state[0] += 1
+
+
+async def startup(
+    bot,
+    developers,
+    reaction_state,
+):
+    for developer_id in load_developer_ids():
+        developer = await developers.next()
+
+        sent = await bot.send_message(
+            developer_id,
+            Reply.STARTUP_TEXT,
+            reply_markup=developer_markup(
+                developer
+            ),
+        )
+
+        schedule_reaction(
+            bot,
+            sent,
+            reaction_state[0],
+        )
+
+        reaction_state[0] += 1
 
 
 async def main():
-    init_db(sqlite3)
-    await send_takeoff_message(bot)
-    await dp.start_polling(bot)
+    bot = Bot(
+        token=os.getenv(
+            BOT_TOKEN_ENV,
+            "",
+        )
+    )
+
+    dispatcher = Dispatcher()
+
+    database = CAsh.Database(
+        get_database()
+    )
+
+    developers = DeveloperCycle(
+        load_developer_ids()
+    )
+
+    queue = NAMe.DownloadQueue()
+
+    reaction_state = [0]
+
+    dispatcher.message.register(
+        lambda message: handle_message(
+            message,
+            database,
+            developers,
+            queue,
+            reaction_state,
+        )
+    )
+
+    dispatcher.callback_query.register(
+        lambda callback: handle_callback(
+            callback,
+            database,
+            developers,
+            reaction_state,
+        ),
+        F.data.startswith("mode:"),
+    )
+
+    await startup(
+        bot,
+        developers,
+        reaction_state,
+    )
+
+    try:
+        await dispatcher.start_polling(
+            bot
+        )
+    finally:
+        database.close()
+        await bot.session.close()
 
 
 if __name__ == "__main__":
