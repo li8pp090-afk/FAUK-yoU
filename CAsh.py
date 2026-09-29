@@ -1,191 +1,191 @@
-import aiosqlite
+import sqlite3
+import threading
+from pathlib import Path
+
+DB_PATH = Path("bot.sqlite3")
+
+_lock = threading.RLock()
+_conn = None
 
 
-DB_PATH = "bot.db"
-db = None
+def init_db():
+    global _conn
+
+    with _lock:
+        if _conn is None:
+            DB_PATH.parent.mkdir(
+                parents=True,
+                exist_ok=True,
+            )
+
+            _conn = sqlite3.connect(
+                DB_PATH,
+                check_same_thread=False,
+            )
+
+            _conn.execute(
+                "PRAGMA journal_mode=WAL"
+            )
+
+            _conn.execute(
+                "PRAGMA foreign_keys=ON"
+            )
+
+            _conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS modes (
+                    scope TEXT PRIMARY KEY,
+                    mode TEXT NOT NULL
+                    CHECK(mode IN ('normal', 'voice'))
+                )
+                """
+            )
+
+            _conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS reply_state (
+                    user_id INTEGER PRIMARY KEY,
+                    reply_index INTEGER NOT NULL DEFAULT 0
+                )
+                """
+            )
+
+            _conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS file_cache (
+                    cache_key TEXT PRIMARY KEY,
+                    file_id TEXT NOT NULL,
+                    kind TEXT NOT NULL
+                )
+                """
+            )
+
+            _conn.commit()
 
 
-async def init_db():
-    global db
+def get_mode(scope):
+    init_db()
 
-    db = await aiosqlite.connect(
-        DB_PATH
-    )
+    with _lock:
+        row = _conn.execute(
+            """
+            SELECT mode
+            FROM modes
+            WHERE scope = ?
+            """,
+            (scope,),
+        ).fetchone()
 
-    await db.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER PRIMARY KEY,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        if row:
+            return row[0]
+
+        return "normal"
+
+
+def set_mode(scope, mode):
+    init_db()
+
+    with _lock:
+        _conn.execute(
+            """
+            INSERT INTO modes(scope, mode)
+            VALUES(?, ?)
+            ON CONFLICT(scope)
+            DO UPDATE SET mode = excluded.mode
+            """,
+            (
+                scope,
+                mode,
+            ),
         )
-    """)
 
-    await db.execute("""
-        CREATE TABLE IF NOT EXISTS tasks (
-            task_id TEXT PRIMARY KEY,
-            user_id INTEGER NOT NULL,
-            status TEXT NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        _conn.commit()
+
+
+def next_reply(user_id, replies):
+    init_db()
+
+    with _lock:
+        row = _conn.execute(
+            """
+            SELECT reply_index
+            FROM reply_state
+            WHERE user_id = ?
+            """,
+            (user_id,),
+        ).fetchone()
+
+        if row is None:
+            index = 0
+        else:
+            index = row[0]
+
+        text = replies[index]
+
+        new_index = (
+            index + 1
+        ) % len(replies)
+
+        _conn.execute(
+            """
+            INSERT INTO reply_state(
+                user_id,
+                reply_index
+            )
+            VALUES(?, ?)
+            ON CONFLICT(user_id)
+            DO UPDATE SET
+                reply_index = excluded.reply_index
+            """,
+            (
+                user_id,
+                new_index,
+            ),
         )
-    """)
 
-    await db.execute("""
-        CREATE TABLE IF NOT EXISTS file_ids (
-            file_key TEXT PRIMARY KEY,
-            file_id TEXT NOT NULL,
-            file_unique_id TEXT,
-            filename TEXT
+        _conn.commit()
+
+        return text
+
+
+def get_file_id(cache_key):
+    init_db()
+
+    with _lock:
+        row = _conn.execute(
+            """
+            SELECT file_id, kind
+            FROM file_cache
+            WHERE cache_key = ?
+            """,
+            (cache_key,),
+        ).fetchone()
+
+        return row
+
+
+def set_file_id(cache_key, file_id, kind):
+    init_db()
+
+    with _lock:
+        _conn.execute(
+            """
+            INSERT INTO file_cache(
+                cache_key,
+                file_id,
+                kind
+            )
+            VALUES(?, ?, ?)
+            ON CONFLICT(cache_key)
+            DO UPDATE SET
+                file_id = excluded.file_id,
+                kind = excluded.kind
+            """,
+            (
+                cache_key,
+                file_id,
+                kind,
+            ),
         )
-    """)
 
-    await db.commit()
-
-
-async def close_db():
-    global db
-
-    if db:
-        await db.close()
-        db = None
-
-
-async def recover_stale_tasks():
-    await db.execute("""
-        UPDATE tasks
-        SET status = 'abandoned'
-        WHERE status IN (
-            'queued',
-            'active',
-            'downloading',
-            'sending'
-        )
-    """)
-
-    await db.commit()
-
-
-async def add_user(user_id):
-    await db.execute(
-        """
-        INSERT OR IGNORE INTO users (
-            user_id
-        )
-        VALUES (?)
-        """,
-        (user_id,)
-    )
-
-    await db.commit()
-
-
-async def add_task(
-    task_id,
-    user_id,
-    status
-):
-    await db.execute(
-        """
-        INSERT INTO tasks (
-            task_id,
-            user_id,
-            status
-        )
-        VALUES (?, ?, ?)
-        """,
-        (
-            task_id,
-            user_id,
-            status
-        )
-    )
-
-    await db.commit()
-
-
-async def update_task(
-    task_id,
-    status
-):
-    await db.execute(
-        """
-        UPDATE tasks
-        SET status = ?
-        WHERE task_id = ?
-        """,
-        (
-            status,
-            task_id
-        )
-    )
-
-    await db.commit()
-
-
-async def delete_task(task_id):
-    await db.execute(
-        """
-        DELETE FROM tasks
-        WHERE task_id = ?
-        """,
-        (task_id,)
-    )
-
-    await db.commit()
-
-
-async def save_file_id(
-    file_key,
-    file_id,
-    file_unique_id,
-    filename
-):
-    await db.execute(
-        """
-        INSERT OR REPLACE INTO file_ids (
-            file_key,
-            file_id,
-            file_unique_id,
-            filename
-        )
-        VALUES (?, ?, ?, ?)
-        """,
-        (
-            file_key,
-            file_id,
-            file_unique_id,
-            filename
-        )
-    )
-
-    await db.commit()
-
-
-async def get_file_id(file_key):
-    cursor = await db.execute(
-        """
-        SELECT
-            file_id,
-            file_unique_id,
-            filename
-        FROM file_ids
-        WHERE file_key = ?
-        """,
-        (file_key,)
-    )
-
-    row = await cursor.fetchone()
-
-    await cursor.close()
-
-    return row
-
-
-async def delete_file_id(file_key):
-    await db.execute(
-        """
-        DELETE FROM file_ids
-        WHERE file_key = ?
-        """,
-        (file_key,)
-    )
-
-    await db.commit()
+        _conn.commit()

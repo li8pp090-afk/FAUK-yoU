@@ -1,66 +1,83 @@
-from aiogram import Router
 from aiogram.enums import ButtonStyle
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-import Order
-import Reply
+from CAsh import get_mode, set_mode
+from Reply import EDIT_TEXT, NORMAL_LABEL, VOICE_LABEL
+
+MODE_NORMAL = "normal"
+MODE_VOICE = "voice"
 
 
-router = Router()
+def scope_for_message(message):
+    chat = message.chat
 
-ID_INDEX = 0
-COLOR_INDEX = 0
+    if chat.type == "private":
+        return f"user:{message.from_user.id}"
 
-COLORS = [
-    ButtonStyle.SUCCESS,
-    ButtonStyle.DANGER,
-    ButtonStyle.PRIMARY
-]
+    thread_id = getattr(
+        message,
+        "message_thread_id",
+        None,
+    )
 
+    if thread_id is not None:
+        return f"chat:{chat.id}:topic:{thread_id}"
 
-def get_next_id():
-    global ID_INDEX
-
-    ids = Order.get_startup_ids()
-
-    if not ids:
-        return None
-
-    developer_id = ids[ID_INDEX]
-
-    ID_INDEX = (
-        ID_INDEX + 1
-    ) % len(ids)
-
-    return developer_id
+    return f"chat:{chat.id}"
 
 
-def get_next_color():
-    global COLOR_INDEX
+def mode_keyboard(scope):
+    mode = get_mode(scope)
 
-    color = COLORS[COLOR_INDEX]
+    voice_style = (
+        ButtonStyle.SUCCESS
+        if mode == MODE_VOICE
+        else ButtonStyle.DANGER
+    )
 
-    COLOR_INDEX = (
-        COLOR_INDEX + 1
-    ) % len(COLORS)
-
-    return color
-
-
-def get_markup():
-    developer_id = get_next_id()
-
-    if not developer_id:
-        return None
+    normal_style = (
+        ButtonStyle.SUCCESS
+        if mode == MODE_NORMAL
+        else ButtonStyle.DANGER
+    )
 
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text=Reply.DEVELOPER_BUTTON,
-                    url=f"tg://user?id={developer_id}",
-                    style=get_next_color()
-                )
+                    text=VOICE_LABEL,
+                    callback_data="mode:voice",
+                    style=voice_style,
+                ),
+                InlineKeyboardButton(
+                    text=NORMAL_LABEL,
+                    callback_data="mode:normal",
+                    style=normal_style,
+                ),
             ]
         ]
     )
+
+
+def change_mode(scope, requested_mode):
+    current = get_mode(scope)
+
+    if requested_mode == MODE_VOICE:
+        new_mode = (
+            MODE_NORMAL
+            if current == MODE_VOICE
+            else MODE_VOICE
+        )
+    else:
+        new_mode = (
+            MODE_VOICE
+            if current == MODE_NORMAL
+            else MODE_NORMAL
+        )
+
+    set_mode(
+        scope,
+        new_mode,
+    )
+
+    return new_mode

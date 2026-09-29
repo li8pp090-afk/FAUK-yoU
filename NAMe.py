@@ -1,392 +1,241 @@
 import asyncio
-import hashlib
-import mimetypes
 import re
+import shutil
+import uuid
 from pathlib import Path
 from urllib.parse import urlparse
 
-from aiogram.types import FSInputFile, InputMediaDocument, ReplyParameters
+DOWNLOAD_ROOT = Path("downloads")
 
-import CAsh
-import Reply
-import yTFMe
-
-
-BLOCKED_HOSTS = {
-    "youtube.com",
-    "youtu.be",
+TELEGRAM_HOSTS = {
+    "t.me",
     "telegram.me",
-    "t.me"
+    "telegram.dog",
 }
 
 
-def is_url(value):
-    try:
-        parsed = urlparse(
-            value.strip()
-        )
-
-        return (
-            parsed.scheme in (
-                "http",
-                "https"
-            )
-            and bool(parsed.netloc)
-        )
-
-    except Exception:
-        return False
-
-
-def is_blocked_url(url):
+def is_telegram_url(url):
     try:
         host = (
-            urlparse(url)
-            .netloc
-            .lower()
-            .split(":")[0]
-        )
-
-        return any(
-            host == domain
-            or host.endswith(
-                "." + domain
-            )
-            for domain in BLOCKED_HOSTS
-        )
-
-    except Exception:
+            urlparse(url).hostname
+            or ""
+        ).lower().rstrip(".")
+    except ValueError:
         return False
 
-
-def normalize_english(text):
-    text = text.lower()
-
-    for char in "atfgujnml":
-        text = text.replace(
-            char,
-            char.upper()
+    return (
+        host in TELEGRAM_HOSTS
+        or any(
+            host.endswith(
+                "." + domain
+            )
+            for domain in TELEGRAM_HOSTS
         )
-
-    return text
-
-
-def clean_name(text):
-    text = re.sub(
-        r'[<>:"/\\|?*\x00-\x1f]',
-        "",
-        text
     )
 
-    return re.sub(
+
+def extract_url(text):
+    if not text:
+        return None
+
+    matches = re.findall(
+        r"https?://[^\s<>\u200b]+",
+        text,
+    )
+
+    for url in matches:
+        url = url.rstrip(
+            ".,!?;:)]}>"
+        )
+
+        if not is_telegram_url(url):
+            return url
+
+    return None
+
+
+def user_directory(user_id):
+    path = DOWNLOAD_ROOT / str(user_id)
+
+    path.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    return path
+
+
+def create_task_directory(user_id):
+    path = (
+        user_directory(user_id)
+        / f"task_{uuid.uuid4().hex}"
+    )
+
+    path.mkdir(
+        parents=True,
+        exist_ok=False,
+    )
+
+    return path
+
+
+def cleanup_task_directory(path):
+    if path and path.exists():
+        shutil.rmtree(
+            path,
+            ignore_errors=True,
+        )
+
+
+def _clean_part(value):
+    value = str(value or "")
+    value = value.lower()
+
+    value = re.sub(
+        r"[^A-Za-z0-9_\-&\s\u0080-\uffff]",
+        "",
+        value,
+    )
+
+    value = re.sub(
         r"\s+",
         " ",
-        text
+        value,
     ).strip()
 
-
-async def get_actual_mime(file_path):
-    process = await asyncio.create_subprocess_exec(
-        "file",
-        "--brief",
-        "--mime-type",
-        "--",
-        str(file_path),
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE
+    value = "".join(
+        char.upper()
+        if char in "atfgujnml"
+        else char
+        for char in value
     )
 
-    stdout, stderr = await process.communicate()
-
-    if process.returncode != 0:
-        raise RuntimeError(
-            stderr.decode(
-                errors="replace"
-            )
-        )
-
-    return stdout.decode().strip().lower()
+    return value
 
 
-def get_extension_from_mime(mime_type):
-    mime_type = (
-        mime_type
-        .split(";", 1)[0]
-        .strip()
-        .lower()
+def _date_from_info(info):
+    value = (
+        info.get("upload_date")
+        or info.get("release_date")
     )
 
-    return (
-        mimetypes.guess_extension(
-            mime_type
-        )
+    if not value:
+        return None
+
+    value = str(value)
+
+    if (
+        len(value) != 8
+        or not value.isdigit()
+    ):
+        return None
+
+    year = int(value[0:4])
+    month = int(value[4:6])
+    day = int(value[6:8])
+
+    return f"{year}-{month}-{day}"
+
+
+def build_filename(info):
+    publisher = (
+        info.get("uploader")
+        or info.get("channel")
+        or info.get("creator")
         or ""
     )
 
+    title = info.get("title") or ""
 
-async def get_real_extension(file_path):
-    mime_type = await get_actual_mime(
-        file_path
-    )
+    publisher = _clean_part(publisher)
+    title = _clean_part(title)
 
-    extension = get_extension_from_mime(
-        mime_type
-    )
-
-    if not extension:
-        raise ValueError(
-            "Unable to determine file extension"
+    if not title:
+        title = (
+            _date_from_info(info)
+            or ""
         )
 
-    return extension
-
-
-async def make_filename(
-    publisher,
-    title,
-    file_path
-):
-    publisher = normalize_english(
-        clean_name(publisher)
-    )
-
-    title = normalize_english(
-        clean_name(title)
-    )
-
-    extension = await get_real_extension(
-        file_path
-    )
+    if publisher and title:
+        return f"{publisher} - {title}"
 
     return (
-        f"{publisher} - "
-        f"{title}"
-        f"{extension}"
+        publisher
+        or title
+        or "download"
     )
 
 
-def rename_file(
-    file_path,
-    filename
-):
-    path = Path(file_path)
-
-    final_path = path.with_name(
-        filename
-    )
-
-    if path != final_path:
-        path.rename(
-            final_path
-        )
-
-    return final_path
-
-
-def make_file_key(url):
-    return hashlib.sha256(
-        url.encode("utf-8")
-    ).hexdigest()
-
-
-async def send_album(
-    bot,
-    message,
-    items
-):
-    for start in range(
-        0,
-        len(items),
-        8
+class ScopeQueue:
+    def __init__(
+        self,
+        max_active=3,
+        max_waiting=3,
     ):
-        batch = items[
-            start:start + 8
-        ]
+        self.max_active = max_active
+        self.max_waiting = max_waiting
+        self._states = {}
+        self._lock = asyncio.Lock()
 
-        media = []
-
-        for item in batch:
-            cached = await CAsh.get_file_id(
-                item["file_key"]
+    async def acquire(self, scope):
+        async with self._lock:
+            state = self._states.setdefault(
+                scope,
+                {
+                    "active": 0,
+                    "waiting": 0,
+                    "event": asyncio.Event(),
+                },
             )
 
-            if cached:
-                media.append(
-                    InputMediaDocument(
-                        media=cached[0]
-                    )
-                )
-            else:
-                media.append(
-                    InputMediaDocument(
-                        media=FSInputFile(
-                            item["path"],
-                            filename=item["filename"]
-                        )
-                    )
-                )
+            if (
+                state["active"]
+                < self.max_active
+            ):
+                state["active"] += 1
+                return True
 
-        try:
-            sent_messages = await bot.send_media_group(
-                chat_id=message.chat.id,
-                media=media,
-                reply_parameters=ReplyParameters(
-                    message_id=message.message_id
-                )
-            )
+            if (
+                state["waiting"]
+                >= self.max_waiting
+            ):
+                return False
 
-        except Exception:
-            for item in batch:
-                if item["cached"]:
-                    await CAsh.delete_file_id(
-                        item["file_key"]
-                    )
+            state["waiting"] += 1
 
-            media = [
-                InputMediaDocument(
-                    media=FSInputFile(
-                        item["path"],
-                        filename=item["filename"]
-                    )
-                )
-                for item in batch
-            ]
+        while True:
+            await state["event"].wait()
 
-            sent_messages = await bot.send_media_group(
-                chat_id=message.chat.id,
-                media=media,
-                reply_parameters=ReplyParameters(
-                    message_id=message.message_id
-                )
-            )
+            async with self._lock:
+                state["event"].clear()
 
-        for item, sent_message in zip(
-            batch,
-            sent_messages
-        ):
-            if sent_message.document:
-                await CAsh.save_file_id(
-                    item["file_key"],
-                    sent_message.document.file_id,
-                    sent_message.document.file_unique_id,
-                    item["filename"]
+                if (
+                    state["active"]
+                    < self.max_active
+                    and state["waiting"] > 0
+                ):
+                    state["waiting"] -= 1
+                    state["active"] += 1
+                    return True
+
+    async def release(self, scope):
+        async with self._lock:
+            state = self._states.get(scope)
+
+            if not state:
+                return
+
+            if state["active"] > 0:
+                state["active"] -= 1
+
+            if state["waiting"] > 0:
+                state["event"].set()
+
+            elif state["active"] == 0:
+                self._states.pop(
+                    scope,
+                    None,
                 )
 
 
-async def process_job(
-    bot,
-    message,
-    url,
-    task_id
-):
-    directory = None
-
-    try:
-        await CAsh.update_task(
-            task_id,
-            "downloading"
-        )
-
-        directory = await yTFMe.create_temp_directory()
-
-        entries = await yTFMe.download(
-            url,
-            directory
-        )
-
-        if not entries:
-            await message.reply(
-                Reply.DOWNLOAD_FAILED_REPLY
-            )
-            return
-
-        items = []
-
-        for entry in entries:
-            entry_url = yTFMe.get_entry_url(
-                entry
-            )
-
-            if not entry_url:
-                continue
-
-            file_key = make_file_key(
-                entry_url
-            )
-
-            cached = await CAsh.get_file_id(
-                file_key
-            )
-
-            if cached:
-                items.append({
-                    "file_key": file_key,
-                    "filename": cached[2] or "file",
-                    "path": None,
-                    "cached": True
-                })
-                continue
-
-            path = entry.get(
-                "_downloaded_path"
-            )
-
-            if not path:
-                continue
-
-            filename = await make_filename(
-                entry.get("uploader")
-                or entry.get("channel")
-                or entry.get("creator")
-                or "unknown",
-                entry.get("title")
-                or "file",
-                path
-            )
-
-            final_path = rename_file(
-                path,
-                filename
-            )
-
-            items.append({
-                "file_key": file_key,
-                "filename": filename,
-                "path": final_path,
-                "cached": False
-            })
-
-        if not items:
-            await message.reply(
-                Reply.DOWNLOAD_FAILED_REPLY
-            )
-            return
-
-        await CAsh.update_task(
-            task_id,
-            "sending"
-        )
-
-        await send_album(
-            bot,
-            message,
-            items
-        )
-
-    except Exception:
-        try:
-            await message.reply(
-                Reply.DOWNLOAD_FAILED_REPLY
-            )
-        except Exception:
-            pass
-
-    finally:
-        if directory:
-            await yTFMe.cleanup(
-                directory
-            )
-
-        await CAsh.delete_task(
-            task_id
-        )
+QUEUE = ScopeQueue()
