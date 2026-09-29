@@ -1,501 +1,326 @@
 import asyncio
+import datetime
+import json
 import os
 import re
-from pathlib import Path
+import shutil
+import sqlite3
+import subprocess
 
-from aiogram import Bot, Dispatcher, F, Router
-from aiogram.enums import ChatMemberStatus
-from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
-from aiogram.filters import CommandStart
-from aiogram.types import CallbackQuery, FSInputFile, InputMediaVideo, Message
-
-import CAsh
-import Reply
-from NAMe import (
-    QUEUE,
-    build_filename,
-    cleanup_task_directory,
-    create_task_directory,
-    extract_url,
-    is_telegram_url,
-    scope_for_message,
+from aiogram import Bot, Dispatcher, F
+from aiogram.enums import ButtonStyle, ChatType
+from aiogram.types import (
+    CallbackQuery,
+    FSInputFile,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    InputMediaDocument,
+    Message,
+    ReactionTypeEmoji,
 )
-from bToN import MODE_NORMAL, MODE_VOICE, change_mode, mode_keyboard
-from yTFMe import download_normal, download_voice
 
-router = Router()
+from bToN import DeveloperButtonRotator, UserReactionManager, get_edit_keyboard
+from CAsh import get_cached_file, get_mode, init_db, save_cached_file, set_mode
+from NAMe import DownloadQueueManager, generate_file_name, is_url
+from Reply import (
+    BTN_NORMAL_LABEL,
+    BTN_VOICE_LABEL,
+    CMD_BOT,
+    CMD_EDIT,
+    DEV_BUTTON_NAMES,
+    REACTION_DELAYS,
+    REACTION_EMOJIS,
+    TXT_DOWNLOAD_FAILED,
+    TXT_EDIT_MENU,
+    TXT_NOT_ALLOWED,
+    TXT_START_DOWNLOAD,
+    TXT_TAKEOFF,
+    USER_BOT_RESPONSES,
+)
+from yTFMe import execute_media_download
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-STARTUP_RECIPIENTS = os.getenv("boT_TAkeoFF", "")
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
+BOT_TAKEOFF = os.environ.get("boT_TAkeoFF", "")
 
-
-def _startup_ids():
-    result = []
-
-    for value in STARTUP_RECIPIENTS.split("/"):
-        value = value.strip()
-
-        if value and re.fullmatch(r"-?\d+", value):
-            result.append(int(value))
-
-    return result
-
-
-def _is_group(message):
-    return message.chat.type in {"group", "supergroup"}
-
-
-async def _is_moderator(message):
-    if not message.from_user:
-        return False
-
-    if message.chat.type == "private":
-        return True
-
-    member = await message.bot.get_chat_member(
-        message.chat.id,
-        message.from_user.id,
-    )
-
-    return member.status in {
-        ChatMemberStatus.ADMINISTRATOR,
-        ChatMemberStatus.CREATOR,
-    }
+queue_manager = DownloadQueueManager(asyncio=asyncio, max_concurrent=3, max_waiting=3)
+user_rotation_state = {}
+user_typing_pattern_state = {}
+reaction_manager = UserReactionManager(emojis=REACTION_EMOJIS, delays=REACTION_DELAYS)
+dev_rotator = DeveloperButtonRotator(dev_names=DEV_BUTTON_NAMES)
 
 
-def _cache_key(info, mode):
-    extractor = info.get("extractor_key") or info.get("extractor") or ""
-    content_id = info.get("id") or ""
-    webpage_url = info.get("webpage_url") or ""
+def get_context_key(message: Message) -> str:
+    if message.chat.type == ChatType.PRIVATE:
+        return f"user_{message.from_user.id}"
 
-    return f"{mode}:{extractor}:{content_id}:{webpage_url}"
+    thread_id = getattr(message, "message_thread_id", None)
+    if thread_id:
+        return f"thread_{message.chat.id}_{thread_id}"
 
-
-async def _send_download_start(message):
-    await message.reply(Reply.DOWNLOAD_START)
-
-
-async def _send_download_fail(message):
-    await message.reply(Reply.DOWNLOAD_FAIL)
+    return f"chat_{message.chat.id}"
 
 
-async def _send_video(message, path, filename):
-    target = Path(path)
-    final_path = target.with_name(filename + target.suffix)
+def get_context_key_from_cb(cb: CallbackQuery) -> str:
+    if cb.message.chat.type == ChatType.PRIVATE:
+        return f"user_{cb.from_user.id}"
 
-    if target != final_path:
-        target.replace(final_path)
+    thread_id = getattr(cb.message, "message_thread_id", None)
+    if thread_id:
+        return f"thread_{cb.message.chat.id}_{thread_id}"
 
-    sent = await message.reply_video(
-        FSInputFile(final_path)
-    )
-
-    return sent.video.file_id
+    return f"chat_{cb.message.chat.id}"
 
 
-async def _send_voice(message, path):
-    sent = await message.reply_voice(
-        FSInputFile(path)
-    )
-
-    return sent.voice.file_id
-
-
-async def _process_single(message, url, mode, work_dir):
-    if is_telegram_url(url):
-        return
-
-    if mode == MODE_VOICE:
-        path, info = await asyncio.to_thread(
-            download_voice,
-            url,
-            work_dir,
+async def trigger_message_reaction(bot_inst: Bot, chat_id: int, message_id: int, user_id: int):
+    try:
+        delay = reaction_manager.get_next_delay(user_id)
+        await asyncio.sleep(delay)
+        emoji = reaction_manager.get_next_emoji(user_id)
+        await bot_inst.set_message_reaction(
+            chat_id=chat_id,
+            message_id=message_id,
+            reaction=[ReactionTypeEmoji(emoji=emoji)]
         )
+    except Exception:
+        pass
 
-        cache_key = _cache_key(info, mode)
-        cached = CAsh.get_file_id(cache_key)
 
-        if cached:
-            try:
-                sent = await message.reply_voice(cached[0])
-                return sent.voice.file_id
-            except TelegramBadRequest:
-                pass
+async def send_animated_text(
+    message: Message,
+    full_text: str,
+    final_reply_markup=None,
+    bot_inst: Bot = None
+):
+    user_id = message.from_user.id
+    lines = full_text.split('\n')
+    current_lines = []
 
-        file_id = await _send_voice(message, path)
+    pattern_toggle = user_typing_pattern_state.get(user_id, True)
+    sent_msg = None
 
-        CAsh.set_file_id(
-            cache_key,
-            file_id,
-            "voice",
-        )
+    for line in lines:
+        words = line.split()
+        if not words:
+            current_lines.append("")
+            continue
 
-        return file_id
+        line_accum = []
+        word_idx = 0
 
-    path, info = await asyncio.to_thread(
-        download_normal,
-        url,
-        work_dir,
-    )
+        while word_idx < len(words):
+            if pattern_toggle:
+                step_sizes = [2, 4]
+            else:
+                step_sizes = [3, 6]
 
-    cache_key = _cache_key(info, mode)
-    cached = CAsh.get_file_id(cache_key)
+            pattern_toggle = not pattern_toggle
 
-    if cached:
+            for count in step_sizes:
+                if word_idx >= len(words):
+                    break
+
+                chunk = words[word_idx:word_idx + count]
+                word_idx += count
+                line_accum.extend(chunk)
+
+                current_displayed_line = " ".join(line_accum)
+                active_text = "\n".join(current_lines + [current_displayed_line])
+
+                if sent_msg is None:
+                    sent_msg = await message.reply(active_text)
+                    if bot_inst:
+                        asyncio.create_task(
+                            trigger_message_reaction(bot_inst, sent_msg.chat.id, sent_msg.message_id, user_id)
+                        )
+                else:
+                    try:
+                        await sent_msg.edit_text(active_text)
+                    except Exception:
+                        pass
+
+                await asyncio.sleep(0.3)
+
+        current_lines.append(" ".join(line_accum))
+
+    user_typing_pattern_state[user_id] = pattern_toggle
+
+    if sent_msg and final_reply_markup:
         try:
-            sent = await message.reply_video(cached[0])
-            return sent.video.file_id
-        except TelegramBadRequest:
+            await sent_msg.edit_reply_markup(reply_markup=final_reply_markup)
+        except Exception:
             pass
 
-    filename = build_filename(info)
 
-    file_id = await _send_video(
-        message,
-        path,
-        filename,
+async def send_takeoff_message(bot_inst: Bot):
+    if not BOT_TAKEOFF:
+        return
+
+    targets = [t.strip() for t in BOT_TAKEOFF.split('/') if t.strip()]
+    for target in targets:
+        try:
+            target_id = int(target)
+            reply_markup = dev_rotator.build_dev_keyboard(
+                InlineKeyboardMarkup,
+                InlineKeyboardButton,
+                ButtonStyle,
+                BOT_TAKEOFF
+            )
+            sent_msg = await bot_inst.send_message(
+                chat_id=target_id,
+                text=TXT_TAKEOFF,
+                reply_markup=reply_markup
+            )
+            if sent_msg:
+                asyncio.create_task(
+                    trigger_message_reaction(bot_inst, sent_msg.chat.id, sent_msg.message_id, target_id)
+                )
+        except Exception:
+            pass
+
+
+bot = Bot(token=BOT_TOKEN)
+dp = Dispatcher()
+
+
+async def is_admin(bot_inst: Bot, chat_id: int, user_id: int) -> bool:
+    try:
+        member = await bot_inst.get_chat_member(chat_id, user_id)
+        return member.status in ["administrator", "creator"]
+    except Exception:
+        return False
+
+
+@dp.message(F.text.lower() == CMD_EDIT.lower())
+async def handle_edit_command(message: Message, bot_inst: Bot):
+    if message.chat.type in [ChatType.GROUP, ChatType.SUPERGROUP]:
+        if not await is_admin(bot_inst, message.chat.id, message.from_user.id):
+            return
+
+    key = get_context_key(message)
+    mode = get_mode(sqlite3, key)
+    keyboard = get_edit_keyboard(
+        InlineKeyboardMarkup,
+        InlineKeyboardButton,
+        ButtonStyle,
+        BTN_VOICE_LABEL,
+        BTN_NORMAL_LABEL,
+        mode
     )
 
-    CAsh.set_file_id(
-        cache_key,
-        file_id,
-        "video",
+    await send_animated_text(
+        message=message,
+        full_text=TXT_EDIT_MENU,
+        final_reply_markup=keyboard,
+        bot_inst=bot_inst
     )
 
-    return file_id
 
+@dp.callback_query(F.data.in_({"toggle_voice", "toggle_normal"}))
+async def handle_edit_callback(cb: CallbackQuery, bot_inst: Bot):
+    if cb.message.chat.type in [ChatType.GROUP, ChatType.SUPERGROUP]:
+        if not await is_admin(bot_inst, cb.message.chat.id, cb.from_user.id):
+            await cb.answer(TXT_NOT_ALLOWED, show_alert=True)
+            return
 
-async def _process_playlist(message, url, mode, work_dir):
-    import yt_dlp
+    key = get_context_key_from_cb(cb)
+    current_mode = get_mode(sqlite3, key)
+    new_mode = "normal" if current_mode == "voice" else "voice"
 
-    def extract():
-        options = {
-            "quiet": True,
-            "no_warnings": True,
-            "noprogress": True,
-            "extract_flat": True,
-            "skip_download": True,
-            "noplaylist": False,
-        }
-
-        with yt_dlp.YoutubeDL(options) as ydl:
-            return ydl.extract_info(
-                url,
-                download=False,
-            )
-
-    info = await asyncio.to_thread(extract)
-
-    entries = info.get("entries") or []
-    urls = []
-
-    for entry in entries:
-        if not entry:
-            continue
-
-        item_url = (
-            entry.get("webpage_url")
-            or entry.get("url")
-        )
-
-        if item_url and not is_telegram_url(item_url):
-            urls.append(item_url)
-
-    if not urls:
-        raise RuntimeError("No playlist entries")
-
-    if mode == MODE_VOICE:
-        for index, item_url in enumerate(urls):
-            item_dir = work_dir / f"item_{index}"
-            item_dir.mkdir(
-                parents=True,
-                exist_ok=True,
-            )
-
-            await _process_single(
-                message,
-                item_url,
-                mode,
-                item_dir,
-            )
-
-        return
-
-    for batch_start in range(0, len(urls), 8):
-        batch = urls[
-            batch_start:batch_start + 8
-        ]
-
-        prepared = []
-
-        for index, item_url in enumerate(batch):
-            item_dir = work_dir / f"item_{batch_start + index}"
-
-            item_dir.mkdir(
-                parents=True,
-                exist_ok=True,
-            )
-
-            path, item_info = await asyncio.to_thread(
-                download_normal,
-                item_url,
-                item_dir,
-            )
-
-            cache_key = _cache_key(
-                item_info,
-                mode,
-            )
-
-            cached = CAsh.get_file_id(cache_key)
-
-            if cached:
-                prepared.append(
-                    (
-                        "cached",
-                        cached[0],
-                        item_info,
-                        None,
-                    )
-                )
-                continue
-
-            filename = build_filename(item_info)
-
-            final_path = Path(path).with_name(
-                filename + Path(path).suffix
-            )
-
-            Path(path).replace(final_path)
-
-            prepared.append(
-                (
-                    "file",
-                    None,
-                    item_info,
-                    final_path,
-                )
-            )
-
-        if not prepared:
-            continue
-
-        media = []
-        upload_indices = []
-
-        for position, item in enumerate(prepared):
-            kind, file_id, item_info, final_path = item
-
-            if kind == "cached":
-                media.append(
-                    InputMediaVideo(
-                        media=file_id
-                    )
-                )
-            else:
-                media.append(
-                    InputMediaVideo(
-                        media=FSInputFile(final_path)
-                    )
-                )
-
-                upload_indices.append(position)
-
-        sent_messages = await message.reply_media_group(
-            media=media
-        )
-
-        for position in upload_indices:
-            sent = sent_messages[position]
-            item_info = prepared[position][2]
-
-            cache_key = _cache_key(
-                item_info,
-                mode,
-            )
-
-            CAsh.set_file_id(
-                cache_key,
-                sent.video.file_id,
-                "video",
-            )
-
-
-async def _process_url(message, url):
-    if is_telegram_url(url):
-        return
-
-    scope = scope_for_message(message)
-    acquired = await QUEUE.acquire(scope)
-
-    if not acquired:
-        return
-
-    work_dir = None
+    set_mode(sqlite3, key, new_mode)
+    new_keyboard = get_edit_keyboard(
+        InlineKeyboardMarkup,
+        InlineKeyboardButton,
+        ButtonStyle,
+        BTN_VOICE_LABEL,
+        BTN_NORMAL_LABEL,
+        new_mode
+    )
 
     try:
-        mode = CAsh.get_mode(scope)
-
-        work_dir = create_task_directory(
-            message.from_user.id
-        )
-
-        await _send_download_start(message)
-
-        import yt_dlp
-
-        def inspect():
-            options = {
-                "quiet": True,
-                "no_warnings": True,
-                "noprogress": True,
-                "extract_flat": True,
-                "skip_download": True,
-                "noplaylist": False,
-            }
-
-            with yt_dlp.YoutubeDL(options) as ydl:
-                return ydl.extract_info(
-                    url,
-                    download=False,
-                )
-
-        info = await asyncio.to_thread(inspect)
-
-        if info.get("_type") == "playlist":
-            await _process_playlist(
-                message,
-                url,
-                mode,
-                work_dir,
-            )
-        else:
-            await _process_single(
-                message,
-                url,
-                mode,
-                work_dir,
-            )
-
+        await cb.message.edit_reply_markup(reply_markup=new_keyboard)
     except Exception:
-        await _send_download_fail(message)
+        pass
 
-    finally:
-        cleanup_task_directory(work_dir)
-        await QUEUE.release(scope)
+    await cb.answer()
 
 
-@router.message(CommandStart())
-async def start_handler(message: Message):
-    return
-
-
-@router.message(F.text == Reply.EDIT_WORD)
-async def edit_handler(message: Message):
-    if not await _is_moderator(message):
-        if _is_group(message):
-            return
-
-    scope = scope_for_message(message)
-
-    await message.reply(
-        Reply.EDIT_TEXT,
-        reply_markup=mode_keyboard(scope),
-    )
-
-
-@router.callback_query(F.data.startswith("mode:"))
-async def mode_callback(callback: CallbackQuery):
-    message = callback.message
-
-    if not message:
-        await callback.answer()
+async def process_media_request(message: Message, text: str):
+    key = get_context_key(message)
+    if not queue_manager.can_enqueue(key):
         return
 
-    if not await _is_moderator(message):
-        await callback.answer(
-            Reply.UNAUTHORIZED_EDIT,
-            show_alert=True,
+    if await queue_manager.acquire(key):
+        try:
+            await execute_media_download(
+                os, json, shutil, datetime, subprocess, asyncio, sqlite3,
+                FSInputFile, InputMediaDocument, message,
+                get_mode, get_cached_file, save_cached_file, generate_file_name,
+                TXT_START_DOWNLOAD, TXT_DOWNLOAD_FAILED, message, text, key, re,
+                dev_rotator, InlineKeyboardMarkup, InlineKeyboardButton, ButtonStyle,
+                BOT_TAKEOFF
+            )
+        finally:
+            queue_manager.release(key)
+
+
+def get_next_response(user_id: int) -> str:
+    current_index = user_rotation_state.get(user_id, 0)
+    response_text = USER_BOT_RESPONSES[current_index]
+    user_rotation_state[user_id] = (current_index + 1) % len(USER_BOT_RESPONSES)
+    return response_text
+
+
+@dp.message(F.chat.type == ChatType.PRIVATE, ~F.text.startswith("/"))
+async def handle_private_chat(message: Message, bot_inst: Bot):
+    if not message.text:
+        return
+
+    text = message.text.strip()
+    if is_url(re, text):
+        await process_media_request(message, text)
+    else:
+        reply_markup = dev_rotator.build_dev_keyboard(
+            InlineKeyboardMarkup,
+            InlineKeyboardButton,
+            ButtonStyle,
+            BOT_TAKEOFF
         )
-        return
-
-    requested = callback.data.split(
-        ":",
-        1,
-    )[1]
-
-    if requested not in {
-        MODE_NORMAL,
-        MODE_VOICE,
-    }:
-        await callback.answer()
-        return
-
-    scope = scope_for_message(message)
-
-    change_mode(
-        scope,
-        requested,
-    )
-
-    await callback.message.edit_reply_markup(
-        reply_markup=mode_keyboard(scope)
-    )
-
-    await callback.answer()
-
-
-@router.message()
-async def message_handler(message: Message):
-    text = message.text or ""
-    url = extract_url(text)
-
-    if url:
-        await _process_url(
-            message,
-            url,
+        response_text = get_next_response(message.from_user.id)
+        await send_animated_text(
+            message=message,
+            full_text=response_text,
+            final_reply_markup=reply_markup,
+            bot_inst=bot_inst
         )
+
+
+@dp.message(F.chat.type.in_({ChatType.GROUP, ChatType.SUPERGROUP}))
+async def handle_group_chat(message: Message, bot_inst: Bot):
+    if not message.text:
         return
 
-    if _is_group(message):
-        if text != Reply.BOT_WORD:
-            return
-    elif text == Reply.EDIT_WORD:
-        return
-
-    reply = CAsh.next_reply(
-        message.from_user.id,
-        Reply.REPLIES,
-    )
-
-    await message.reply(reply)
+    text = message.text.strip()
+    if is_url(re, text):
+        await process_media_request(message, text)
+    elif text.lower() == CMD_BOT.lower():
+        reply_markup = dev_rotator.build_dev_keyboard(
+            InlineKeyboardMarkup,
+            InlineKeyboardButton,
+            ButtonStyle,
+            BOT_TAKEOFF
+        )
+        response_text = get_next_response(message.from_user.id)
+        await send_animated_text(
+            message=message,
+            full_text=response_text,
+            final_reply_markup=reply_markup,
+            bot_inst=bot_inst
+        )
 
 
 async def main():
-    if not BOT_TOKEN:
-        raise RuntimeError(
-            "BOT_TOKEN is not set"
-        )
-
-    CAsh.init_db()
-
-    bot = Bot(BOT_TOKEN)
-    dp = Dispatcher()
-
-    dp.include_router(router)
-
-    for recipient_id in _startup_ids():
-        try:
-            await bot.send_message(
-                recipient_id,
-                Reply.STARTUP,
-            )
-        except (
-            TelegramForbiddenError,
-            TelegramBadRequest,
-        ):
-            pass
-
+    init_db(sqlite3)
+    await send_takeoff_message(bot)
     await dp.start_polling(bot)
 
 

@@ -1,83 +1,122 @@
-from aiogram.enums import ButtonStyle
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
-
-from CAsh import get_mode, set_mode
-from Reply import EDIT_TEXT, NORMAL_LABEL, VOICE_LABEL
-
-MODE_NORMAL = "normal"
-MODE_VOICE = "voice"
+DEV_BUTTON_STYLES = ["danger", "success", "primary"]
 
 
-def scope_for_message(message):
-    chat = message.chat
+class DeveloperButtonRotator:
+    def __init__(self, dev_names: list, dev_styles: list = None):
+        self.dev_names = dev_names
+        self.dev_styles = dev_styles or DEV_BUTTON_STYLES
+        self.dev_ids = []
 
-    if chat.type == "private":
-        return f"user:{message.from_user.id}"
+        self.name_idx = 0
+        self.style_idx = 0
+        self.id_idx = 0
 
-    thread_id = getattr(
-        message,
-        "message_thread_id",
-        None,
-    )
+    def load_dev_ids(self, takeoff_env: str):
+        if not takeoff_env:
+            self.dev_ids = []
+            return
 
-    if thread_id is not None:
-        return f"chat:{chat.id}:topic:{thread_id}"
+        targets = [t.strip() for t in takeoff_env.split('/') if t.strip()]
+        parsed_ids = []
+        for target in targets:
+            try:
+                parsed_ids.append(int(target))
+            except ValueError:
+                pass
+        self.dev_ids = parsed_ids
 
-    return f"chat:{chat.id}"
+    def get_next_dev_info(self, takeoff_env: str):
+        self.load_dev_ids(takeoff_env)
 
+        if not self.dev_ids:
+            return None
 
-def mode_keyboard(scope):
-    mode = get_mode(scope)
+        current_id = self.dev_ids[self.id_idx % len(self.dev_ids)]
+        current_name = self.dev_names[self.name_idx % len(self.dev_names)]
+        current_style_str = self.dev_styles[self.style_idx % len(self.dev_styles)]
 
-    voice_style = (
-        ButtonStyle.SUCCESS
-        if mode == MODE_VOICE
-        else ButtonStyle.DANGER
-    )
+        self.id_idx = (self.id_idx + 1) % len(self.dev_ids)
+        self.name_idx = (self.name_idx + 1) % len(self.dev_names)
+        self.style_idx = (self.style_idx + 1) % len(self.dev_styles)
 
-    normal_style = (
-        ButtonStyle.SUCCESS
-        if mode == MODE_NORMAL
-        else ButtonStyle.DANGER
-    )
+        return {
+            "id": current_id,
+            "name": current_name,
+            "style_str": current_style_str,
+            "url": f"tg://user?id={current_id}"
+        }
 
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text=VOICE_LABEL,
-                    callback_data="mode:voice",
-                    style=voice_style,
-                ),
-                InlineKeyboardButton(
-                    text=NORMAL_LABEL,
-                    callback_data="mode:normal",
-                    style=normal_style,
-                ),
-            ]
-        ]
-    )
+    def build_dev_keyboard(
+        self,
+        inline_keyboard_markup,
+        inline_keyboard_button,
+        btn_style,
+        takeoff_env: str
+    ):
+        info = self.get_next_dev_info(takeoff_env)
+        if not info:
+            return None
 
+        style_map = {
+            "danger": btn_style.DANGER,
+            "success": btn_style.SUCCESS,
+            "primary": btn_style.PRIMARY
+        }
+        chosen_style = style_map.get(info["style_str"], btn_style.PRIMARY)
 
-def change_mode(scope, requested_mode):
-    current = get_mode(scope)
-
-    if requested_mode == MODE_VOICE:
-        new_mode = (
-            MODE_NORMAL
-            if current == MODE_VOICE
-            else MODE_VOICE
+        dev_btn = inline_keyboard_button(
+            text=info["name"],
+            url=info["url"],
+            style=chosen_style
         )
-    else:
-        new_mode = (
-            MODE_VOICE
-            if current == MODE_NORMAL
-            else MODE_NORMAL
-        )
+        return inline_keyboard_markup(inline_keyboard=[[dev_btn]])
 
-    set_mode(
-        scope,
-        new_mode,
+
+class UserReactionManager:
+    def __init__(self, emojis: list, delays: list):
+        self.emojis = emojis
+        self.delays = delays
+        self.user_states = {}
+
+    def _ensure_user(self, user_id: int):
+        if user_id not in self.user_states:
+            self.user_states[user_id] = {
+                "delay_idx": 0,
+                "emoji_idx": 0
+            }
+
+    def get_next_delay(self, user_id: int) -> float:
+        self._ensure_user(user_id)
+        state = self.user_states[user_id]
+        delay = self.delays[state["delay_idx"]]
+        state["delay_idx"] = (state["delay_idx"] + 1) % len(self.delays)
+        return delay
+
+    def get_next_emoji(self, user_id: int) -> str:
+        self._ensure_user(user_id)
+        state = self.user_states[user_id]
+        emoji = self.emojis[state["emoji_idx"]]
+        state["emoji_idx"] = (state["emoji_idx"] + 1) % len(self.emojis)
+        return emoji
+
+
+def get_edit_keyboard(
+    inline_keyboard_markup,
+    inline_keyboard_button,
+    btn_style,
+    btn_voice_label,
+    btn_normal_label,
+    current_mode: str
+):
+    is_voice = (current_mode == "voice")
+    voice_btn = inline_keyboard_button(
+        text=btn_voice_label,
+        callback_data="toggle_voice",
+        style=btn_style.SUCCESS if is_voice else btn_style.DANGER
     )
-
-    return new_mode
+    normal_btn = inline_keyboard_button(
+        text=btn_normal_label,
+        callback_data="toggle_normal",
+        style=btn_style.DANGER if is_voice else btn_style.SUCCESS
+    )
+    return inline_keyboard_markup(inline_keyboard=[[voice_btn, normal_btn]])

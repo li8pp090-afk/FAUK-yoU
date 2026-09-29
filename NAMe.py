@@ -1,241 +1,90 @@
-import asyncio
-import re
-import shutil
-import uuid
-from pathlib import Path
-from urllib.parse import urlparse
+def format_text_cases(text: str) -> str:
+    if not text:
+        return ""
+    upper_targets = set("ATFGUJNML")
+    result = []
+    for char in text:
+        if 'a' <= char <= 'z':
+            result.append(char.upper() if char.upper() in upper_targets else char)
+        elif 'A' <= char <= 'Z':
+            result.append(char if char in upper_targets else char.lower())
+        else:
+            result.append(char)
+    return "".join(result)
 
-DOWNLOAD_ROOT = Path("downloads")
 
-TELEGRAM_HOSTS = {
-    "t.me",
-    "telegram.me",
-    "telegram.dog",
-}
+def clean_filename_part(re, text: str) -> str:
+    if not text:
+        return ""
+    formatted = format_text_cases(text)
+    cleaned = re.sub(r'[^a-zA-Z0-9\u0600-\u06FF\s_\&\-]', '', formatted)
+    return re.sub(r'\s+', ' ', cleaned).strip()
 
 
-def is_telegram_url(url):
-    try:
-        host = (
-            urlparse(url).hostname
-            or ""
-        ).lower().rstrip(".")
-    except ValueError:
+def generate_file_name(
+    re,
+    datetime,
+    publisher_or_channel: str,
+    title: str,
+    actual_date=None
+) -> str:
+    publisher_clean = clean_filename_part(re, publisher_or_channel)
+    title_clean = clean_filename_part(re, title)
+
+    if not title_clean:
+        if actual_date:
+            title_clean = actual_date.strftime("%Y-%m-%d")
+        else:
+            title_clean = datetime.date.today().strftime("%Y-%m-%d")
+
+    if publisher_clean and title_clean:
+        return f"{publisher_clean} - {title_clean}"
+    return publisher_clean or title_clean
+
+
+def is_telegram_url(re, text: str) -> bool:
+    telegram_pattern = r'(https?://)?(www\.)?(t\.me|telegram\.me|telegram\.dog)/[^\s]+'
+    return bool(re.search(telegram_pattern, text, re.IGNORECASE))
+
+
+def is_url(re, text: str) -> bool:
+    if is_telegram_url(re, text):
+        return False
+    return bool(re.search(r'https?://[^\s]+', text))
+
+
+class DownloadQueueManager:
+    def __init__(self, asyncio, max_concurrent=3, max_waiting=3):
+        self.asyncio = asyncio
+        self.max_concurrent = max_concurrent
+        self.max_waiting = max_waiting
+        self.active_tasks = {}
+        self.waiting_counts = {}
+
+    def can_enqueue(self, key: str) -> bool:
+        active = self.active_tasks.get(key, 0)
+        waiting = self.waiting_counts.get(key, 0)
+        return active < self.max_concurrent or waiting < self.max_waiting
+
+    async def acquire(self, key: str) -> bool:
+        if key not in self.active_tasks:
+            self.active_tasks[key] = 0
+            self.waiting_counts[key] = 0
+
+        if self.active_tasks[key] < self.max_concurrent:
+            self.active_tasks[key] += 1
+            return True
+
+        if self.waiting_counts[key] < self.max_waiting:
+            self.waiting_counts[key] += 1
+            while self.active_tasks[key] >= self.max_concurrent:
+                await self.asyncio.sleep(1)
+            self.waiting_counts[key] -= 1
+            self.active_tasks[key] += 1
+            return True
+
         return False
 
-    return (
-        host in TELEGRAM_HOSTS
-        or any(
-            host.endswith(
-                "." + domain
-            )
-            for domain in TELEGRAM_HOSTS
-        )
-    )
-
-
-def extract_url(text):
-    if not text:
-        return None
-
-    matches = re.findall(
-        r"https?://[^\s<>\u200b]+",
-        text,
-    )
-
-    for url in matches:
-        url = url.rstrip(
-            ".,!?;:)]}>"
-        )
-
-        if not is_telegram_url(url):
-            return url
-
-    return None
-
-
-def user_directory(user_id):
-    path = DOWNLOAD_ROOT / str(user_id)
-
-    path.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
-
-    return path
-
-
-def create_task_directory(user_id):
-    path = (
-        user_directory(user_id)
-        / f"task_{uuid.uuid4().hex}"
-    )
-
-    path.mkdir(
-        parents=True,
-        exist_ok=False,
-    )
-
-    return path
-
-
-def cleanup_task_directory(path):
-    if path and path.exists():
-        shutil.rmtree(
-            path,
-            ignore_errors=True,
-        )
-
-
-def _clean_part(value):
-    value = str(value or "")
-    value = value.lower()
-
-    value = re.sub(
-        r"[^A-Za-z0-9_\-&\s\u0080-\uffff]",
-        "",
-        value,
-    )
-
-    value = re.sub(
-        r"\s+",
-        " ",
-        value,
-    ).strip()
-
-    value = "".join(
-        char.upper()
-        if char in "atfgujnml"
-        else char
-        for char in value
-    )
-
-    return value
-
-
-def _date_from_info(info):
-    value = (
-        info.get("upload_date")
-        or info.get("release_date")
-    )
-
-    if not value:
-        return None
-
-    value = str(value)
-
-    if (
-        len(value) != 8
-        or not value.isdigit()
-    ):
-        return None
-
-    year = int(value[0:4])
-    month = int(value[4:6])
-    day = int(value[6:8])
-
-    return f"{year}-{month}-{day}"
-
-
-def build_filename(info):
-    publisher = (
-        info.get("uploader")
-        or info.get("channel")
-        or info.get("creator")
-        or ""
-    )
-
-    title = info.get("title") or ""
-
-    publisher = _clean_part(publisher)
-    title = _clean_part(title)
-
-    if not title:
-        title = (
-            _date_from_info(info)
-            or ""
-        )
-
-    if publisher and title:
-        return f"{publisher} - {title}"
-
-    return (
-        publisher
-        or title
-        or "download"
-    )
-
-
-class ScopeQueue:
-    def __init__(
-        self,
-        max_active=3,
-        max_waiting=3,
-    ):
-        self.max_active = max_active
-        self.max_waiting = max_waiting
-        self._states = {}
-        self._lock = asyncio.Lock()
-
-    async def acquire(self, scope):
-        async with self._lock:
-            state = self._states.setdefault(
-                scope,
-                {
-                    "active": 0,
-                    "waiting": 0,
-                    "event": asyncio.Event(),
-                },
-            )
-
-            if (
-                state["active"]
-                < self.max_active
-            ):
-                state["active"] += 1
-                return True
-
-            if (
-                state["waiting"]
-                >= self.max_waiting
-            ):
-                return False
-
-            state["waiting"] += 1
-
-        while True:
-            await state["event"].wait()
-
-            async with self._lock:
-                state["event"].clear()
-
-                if (
-                    state["active"]
-                    < self.max_active
-                    and state["waiting"] > 0
-                ):
-                    state["waiting"] -= 1
-                    state["active"] += 1
-                    return True
-
-    async def release(self, scope):
-        async with self._lock:
-            state = self._states.get(scope)
-
-            if not state:
-                return
-
-            if state["active"] > 0:
-                state["active"] -= 1
-
-            if state["waiting"] > 0:
-                state["event"].set()
-
-            elif state["active"] == 0:
-                self._states.pop(
-                    scope,
-                    None,
-                )
-
-
-QUEUE = ScopeQueue()
+    def release(self, key: str):
+        if key in self.active_tasks and self.active_tasks[key] > 0:
+            self.active_tasks[key] -= 1
